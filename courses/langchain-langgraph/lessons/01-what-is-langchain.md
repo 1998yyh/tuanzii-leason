@@ -1,0 +1,302 @@
+# 第 1 章 LangChain 是什么：从「会调 API」到「会做 AI 应用」
+
+> 一句话总结：从裸调 API 的痛点出发，认识 LangChain 的生态版图与它在 AI Agent 时代的角色，并搭好能跑通三家模型的开发环境。
+
+## 先动手：不用框架写一个 AI 助手
+
+很多人学 LangChain 的第一步是背概念，结果越背越糊涂。我们换个顺序：先不用任何框架，把一个小助手做出来，看看代码会变成什么样。
+
+假设你要做一个「学习助手」，第一个需求很简单：用户提问，模型回答。用 Node.js 直接调 DeepSeek 的 HTTP 接口（DeepSeek 提供和 OpenAI 一样的接口格式），大概是这样：
+
+```ts
+// 裸调 API 的第一版：一个 fetch 搞定
+// 两个前置语法：import 是把别人写好的功能引进来用；
+// await 表示"等这个异步操作（这里是网络请求）出结果再继续"，第 2 章会细讲
+const resp = await fetch("https://api.deepseek.com/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+  },
+  body: JSON.stringify({
+    model: "deepseek-v4-flash",
+    messages: [{ role: "user", content: "什么是闭包？" }],
+  }),
+});
+const data = await resp.json();
+console.log(data.choices[0].message.content);
+```
+
+能跑，没问题。接着产品经理来了，加三个需求：
+
+1. 回答前要先套一段固定的角色设定，比如「你是耐心的编程老师」；
+2. 让模型把答案整理成 JSON，字段是 `summary` 和 `keyPoints`，前端要渲染；
+3. 公司采购变了，下周切到 OpenAI，下下周可能还要试试 Claude。
+
+第一个需求，你在 messages 数组前面拼一条 system 消息：
+
+```ts
+// 需求 1：角色设定靠手拼，Prompt 越写越长
+const systemPrompt = `你是耐心的编程老师。规则：
+1. 用通俗语言解释，必要时举例；
+2. 回答控制在 200 字以内；
+3. 不确定的内容明确说不确定。`;
+messages.unshift({ role: "system", content: systemPrompt });
+```
+
+第二个需求，你在 Prompt 里写「请只返回 JSON」，然后写防御性的解析代码：
+
+```ts
+// 需求 2：求模型返回 JSON，再手动收拾残局
+const text = data.choices[0].message.content;
+let parsed;
+try {
+  // 模型经常多送一句"好的，这是您要的 JSON"，或者套上 ```json 代码围栏
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  parsed = JSON.parse(cleaned);
+} catch {
+  parsed = { summary: text, keyPoints: [] }; // 解析失败只能降级
+}
+```
+
+第三个需求最麻烦。三家服务的地址、鉴权头、请求字段细节都不一样，你开始写适配层：
+
+```ts
+// 需求 3：换供应商就要多一个分支，分支会越来越多
+if (provider === "deepseek") {
+  url = "https://api.deepseek.com/chat/completions";
+  headers = { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}` };
+} else if (provider === "openai") {
+  url = "https://api.openai.com/v1/chat/completions";
+  headers = { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` };
+} else if (provider === "claude") {
+  // Claude 的接口结构不同：messages 之外，system 是独立字段，鉴权头也不一样
+  url = "https://api.anthropic.com/v1/messages";
+  headers = { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" };
+}
+```
+
+到这里，一个「简单问答」已经长出了一堆和业务无关的代码：拼 Prompt 的、解析输出的、适配不同模型的、处理重试的。这些代码有个共同名字，叫**胶水代码**——它们不创造业务价值，但没有它们，应用就散架。更难受的是，需求还会继续来：多轮对话要管理历史、要接搜索工具、要把回答流式（边生成边输出，而不是等全部写完）吐给前端。每来一个，胶水就厚一层。
+
+记住这个感觉。LangChain 要解决的就是这件事。
+
+## LangChain 到底是什么
+
+LangChain 是一个 **LLM 应用编排框架**。拆开说：
+
+- **LLM（Large Language Model，大语言模型）**：GPT、Claude、DeepSeek 这类模型。你给它一段文字，它预测并生成接下来的文字。它是「引擎」，本身不会管你的应用逻辑。
+- **应用编排**：一个真实应用很少只调一次模型。常见的形态是「先检索资料，再把资料塞进 Prompt，调模型，把输出解析成结构化数据，失败了就重试或换个模型」。把这些步骤组织起来，就是编排。
+- **框架**：LangChain 把编排里反复出现的零件做成标准部件，并规定部件之间怎么连接。
+
+回到上面的三个需求，LangChain 给出的对应物是：角色设定用 **PromptTemplate（提示词模板）** 管理；JSON 输出用 **OutputParser（输出解析器）** 或结构化输出能力强制约束；换模型只改一行构造代码，因为所有模型都实现了同一个 **ChatModel 接口**。
+
+有两个误解要在一开始就打掉：
+
+**误解一：LangChain 是调模型的封装库。** 不对。封装调用只是它最底层的能力，它真正的价值在「组合」——把模型、模板、解析器、检索器、工具这些部件用统一的方式接成一条流水线。第 2 章你会亲手体验到。
+
+**误解二：做 AI 应用必须用 LangChain。** 也不对。如果你的应用真的只是「一问一答」，裸调 API 完全够用，引入框架反而是负担。LangChain 的价值随着步骤数量、部件种类和变更频率一起增长。学完这门课，你应该能自己判断什么时候该用它，而不是到处套它。
+
+## 诞生背景：它为什么会出现，又为什么活下来了
+
+了解一个框架的来路，能帮你判断它的设计哪些是深思熟虑、哪些是历史包袱。
+
+2022 年 10 月，开发者 Harrison Chase 在 GitHub 上开源了 LangChain。时间点很微妙：GPT-3 已经能写像模像样的文字，但开发者很快发现，单次调用的能力撑不起真实应用——模型没有记忆、不知道私有数据、不会调用外部系统。大家开始手写「先查资料再问模型」「让模型输出 JSON 再去执行」这类流程，写法五花八门。LangChain 把这些散落的做法收拢成一套统一的部件和连接方式，几个月内就成了 LLM 应用开发事实上的标准之一。
+
+它的演进大致分三段：
+
+- **2022–2023 年，野蛮生长期**。功能爆炸式增加，API 朝令夕改，「上个月的教程这个月跑不通」是那个时期的集体记忆。Chain 概念也在这时确立：把多个步骤首尾相接。
+- **2024 年，架构收敛期**。社区沉淀出两条主线：LCEL（LangChain Expression Language，声明式的链式组合语法，第 2 章的主角）和 LangGraph（应对复杂 Agent 流程的图编排引擎，模块二的主角）。旧式 Chain 类逐步退场。
+- **2025 年 10 月，v1 发布**。一次彻底的重构：包结构精简（旧 API 移入 `@langchain/classic`），Agent 能力以 `createAgent` 为核心收口到 `langchain` 包，并明确建立在 LangGraph 之上。本课程教的正是 v1 体系。
+
+这段历史对学习者有一个实际意义：**网上 2025 年之前的 LangChain 教程，大概率是旧 API**（标志是 `LLMChain`、`initializeAgent`、`createReactAgent` 这些名字）。照着写会报错或触发废弃警告。识别方法很简单：看 import 来源和函数名，对不上 v1 写法的，以官方迁移指南为准。
+
+## 在 AI Agent 开发里，LangChain 站在哪
+
+「Agent（智能体）」是这两年被用得最滥的词之一，本课程给它一个可操作的最小定义：**能自己决定下一步做什么的系统**——不只是被动回答，而是能判断「我现在该查资料、该调工具、还是该直接回答」，并循环这个过程直到任务完成。
+
+从「调一次模型」到「像样的 Agent」，复杂度是分层爬坡的：
+
+| 层级 | 形态 | 典型例子 | 主要挑战 |
+| --- | --- | --- | --- |
+| L0 单次调用 | 一问一答 | 翻译、润色 | 裸调 API 就够 |
+| L1 固定流水线 | 步骤确定的多次调用 | 检索资料 → 总结 → 格式化 | 部件组合、输出解析 |
+| L2 工具型 Agent | 模型自己决定调不调工具 | 查天气、算汇率、查数据库 | 工具定义、调用循环 |
+| L3 有状态工作流 | 分支、循环、多轮记忆、人工审批 | 客服工单处理、代码审查 | 状态管理、流程控制 |
+| L4 多 Agent 系统 | 多个专业 Agent 协作 | 研发流程自动化 | 分工、通信、观测 |
+
+LangChain 的主战场是 L1 和 L2：它提供组合部件和工具调用的标准件。LangGraph 接管 L3 和 L4：当流程需要状态、分支和人工介入时，线性流水线表达不了，需要图。这就是两门框架的分工，也是这门课模块一到模块二的演进路线。模块三的实战项目，会把 L1 到 L3 的形态在一个产品里都用一遍。
+
+## 生态版图：这些包和兄弟项目各管什么
+
+LangChain 已经不是单个库，而是一族项目。在 npm 上装依赖时你会看到好几个名字，先认清它们，后面不迷路：
+
+| 名字 | 管什么 | 什么时候装 |
+| --- | --- | --- |
+| `@langchain/core` | 核心抽象：ChatModel、PromptTemplate、Runnable、消息类型 | 一定会装（通常被别的包带进来） |
+| `langchain` | 面向应用的高层入口，v1 起 Agent 能力（`createAgent`）在这里 | 做 Agent 时装 |
+| `@langchain/openai` | OpenAI 及 OpenAI 兼容接口（DeepSeek 也走它） | 用 OpenAI/DeepSeek 时装 |
+| `@langchain/anthropic` | Claude 模型接入 | 用 Claude 时装 |
+| `@langchain/langgraph` | 图编排引擎，管复杂 Agent 工作流 | 第 5 章起的主角 |
+| `@langchain/classic` | v1 之前的旧 API 存档 | 维护老代码时才需要 |
+
+兄弟项目还有两个，先记住名字和分工：
+
+- **LangGraph**：本课程模块二的主角。如果说 LangChain 提供「零件」，LangGraph 提供「图纸」——用图（节点 + 边）描述有分支、有循环、有记忆的 Agent 流程。
+- **LangSmith**：观测平台。Agent 每一步想了什么、调了什么、花了多少 token，都能在里面回放。第 10 章会接入。
+
+另外说明一句：LangChain 有 Python 和 JavaScript/TypeScript 两个版本，生态和能力大致对齐，Python 版功能通常略早发布。本课程全程使用 JS/TS 版，所有代码在 Node.js 上运行。
+
+## 术语地基：五个词，后面每章都用
+
+在跑代码之前，把五个高频术语一次讲清。后面章节默认你认识它们。
+
+**Token（词元）**。模型读写的最小单位，不是字也不是词。对中文来说，一个汉字大约折 1 到 2 个 token；对英文，一个常见单词大约 1 个。它重要在两个地方：一是计费按 token 算，二是模型一次能处理的总量有上限。
+
+**上下文窗口（Context Window）**。模型一次请求能看到的 token 总量上限，包括你的输入和它的输出。比如 2026 年 7 月核验时，DeepSeek-V4 系列的上下文标称 1M token。塞超了会怎样？要么报错，要么最早的内容被截掉——模型不会提醒你，它只是「看不见」了。一个直观的量级感受：1M token 大约能装下一部《红楼梦》全文再加几十万字。看着很大，但如果你做「把整个代码仓库塞给模型」这类应用，照样能顶到天花板。第 3 章的 RAG 就是回答「塞不下怎么办」的。
+
+**消息角色（Role）**。和模型对话不是传一整段文本，而是传一个消息数组，每条消息有角色：`system` 是幕后设定（人格、规则），`user` 是用户输入，`assistant` 是模型的回答。多轮对话就是把历史消息越攒越长地发过去，这也是为什么长对话费 token。
+
+**API Key（密钥）**。调用模型服务的凭证，相当于银行卡密码。两条铁律：不提交进 git，不放进前端代码。本课程统一放在 `.env` 文件里，并且 `.env` 必须加进 `.gitignore`。
+
+**温度（Temperature）**。控制输出随机性的参数，常见范围 0 到 1。越低越稳定、越高越发散。需要格式严格的输出（比如 JSON）时调低，创意写作时可以调高。课程示例默认不传，用各家默认值。
+
+## 环境搭建：一次配好，全课通用
+
+现在开始动手。整个课程只用这一套环境，本章配好，后面直接用。
+
+### 第一步：确认 Node.js 版本
+
+```bash
+node --version
+```
+
+要求 **v20 或更高**（本课程在 v22 上验证）。低于 v20 的，去 nodejs.org 装一个 LTS 版本再回来。
+
+### 第二步：初始化项目
+
+找一个空目录，执行：
+
+```bash
+mkdir lc-course && cd lc-course
+npm init -y
+npm install langchain @langchain/core @langchain/openai @langchain/anthropic @langchain/textsplitters @langchain/classic zod
+npm install --save-dev tsx typescript
+```
+
+装了什么，逐个交代：`langchain` 是高层入口；`@langchain/core` 是核心抽象；`@langchain/openai` 同时服务 OpenAI 和 DeepSeek（兼容接口）；`@langchain/anthropic` 服务 Claude；`@langchain/textsplitters` 和 `@langchain/classic` 第 3 章做文档切分和内存向量库时用，一并装好；`zod` 是 TypeScript 世界的 schema 校验库，定义工具参数和结构化输出都靠它，第 2 章细讲。`tsx` 让我们不用编译就能直接运行 TypeScript 文件，省去搭建构建链的麻烦。
+
+### 第三步：配置密钥
+
+在项目根目录建 `.env` 文件，按你实际有的密钥填，没有的先留空：
+
+```bash
+# .env —— 此文件永远不要提交到 git
+DEEPSEEK_API_KEY=sk-你的key
+OPENAI_API_KEY=sk-你的key
+ANTHROPIC_API_KEY=sk-你的key
+```
+
+再建 `.gitignore`，至少包含两行：
+
+```
+node_modules
+.env
+```
+
+三家密钥在哪申请：DeepSeek 在 platform.deepseek.com，OpenAI 在 platform.openai.com，Claude 在 console.anthropic.com。三家都按用量计费，DeepSeek 对国内开发者最友好：价格低、可直连、有赠送额度，所以本课程的可运行示例默认用 DeepSeek，另外两家给对照配置。
+
+### 第四步：Hello LLM
+
+新建 `hello.ts`：
+
+```ts
+import { ChatOpenAI } from "@langchain/openai";
+
+// DeepSeek 走 OpenAI 兼容接口：换个地址和型号就行
+// 注意显式传 apiKey：ChatOpenAI 默认只读 OPENAI_API_KEY，不传就会拿着空密钥去请求
+const model = new ChatOpenAI({
+  model: "deepseek-v4-flash",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  configuration: { baseURL: "https://api.deepseek.com" },
+});
+
+const response = await model.invoke("用一句话向程序员解释什么是 LangChain。");
+console.log(response.content);
+```
+
+运行（`--env-file` 让 Node 自动加载 `.env`，要求 Node 20.6+；老版本可以用 dotenv 包代替）：
+
+```bash
+npx tsx --env-file=.env hello.ts
+```
+
+看到一句中文回答，环境就成了。如果报 401，是密钥没配对；报网络超时，检查代理或换 DeepSeek 直连。
+
+### 换另外两家，只改构造代码
+
+```ts
+// OpenAI：2026-07 核验，低成本档型号为 gpt-5.6-luna
+const openai = new ChatOpenAI({ model: "gpt-5.6-luna" });
+
+// Claude：2026-07 核验，主力型号之一为 claude-sonnet-5
+import { ChatAnthropic } from "@langchain/anthropic";
+const claude = new ChatAnthropic({ model: "claude-sonnet-5" });
+```
+
+注意一个细节：OpenAI 和 Claude 的密钥都没写。`ChatOpenAI` 默认读 `OPENAI_API_KEY` 环境变量，`ChatAnthropic` 默认读 `ANTHROPIC_API_KEY`，名字对上就自动生效。DeepSeek 不行，它的密钥变量名是 `DEEPSEEK_API_KEY`，`ChatOpenAI` 不认识，所以必须像 hello.ts 那样用 `apiKey` 参数显式传入。这个「默认读哪个变量」的差异是新手第一个 401 的高发区，课程后续所有 DeepSeek 示例都会显式写 `apiKey`。三家模型，一个 `invoke` 调用方式——这就是统一接口的第一点甜头。
+
+型号名字是会过期的。比如 DeepSeek 的旧型号 `deepseek-chat` 在 2026 年 7 月 24 日刚停用，由 `deepseek-v4-flash` 接替。所以课程里所有型号都标注了核验日期，你自己开发时以各家官方文档的模型列表页为准。
+
+### 第五步：版本核验（这门课的自我保护动作）
+
+LangChain 迭代很快，教程和包版本对不上是最常见的踩坑来源。两个命令随时可查：
+
+```bash
+npm list langchain @langchain/core   # 看你本地装的版本
+npm view langchain version           # 看 npm 上最新版本
+```
+
+本课程基于 **langchain v1.5.x / @langchain/core v1.2.x**（2026-07-27 核验），用的是 v1 新 API 体系。如果你读到这课时主版本号已经变了，先去官方迁移指南（docs.langchain.com 的 migrate 栏目）对一遍差异。
+
+### 第六步：跟练常见报错对照
+
+第一次跑通之前，你大概率会撞上下面几个报错。先认识它们，省下满世界搜索的时间：
+
+| 报错现象 | 大概率原因 | 处理 |
+| --- | --- | --- |
+| `401 Unauthorized` | 密钥错误、过期，或 `.env` 没被加载 | 检查密钥拼写；确认启动命令带了 `--env-file=.env` |
+| `404 model not found` | 型号名写错，或该型号已下线 | 去官方模型列表页对名字（型号会过期，见上文） |
+| 网络超时 / `ECONNRESET` | 国内直连 OpenAI、Anthropic 被墙 | 换 DeepSeek 跟练，或自行解决网络出口 |
+| `Cannot use import statement` | 用 `node` 直接跑了 `.ts` 文件 | 改用 `npx tsx` 运行 |
+| `ERR_MODULE_NOT_FOUND` | 依赖没装上，或包名打错 | 重跑 `npm install`，核对 import 的包名 |
+
+还有一点课程约定：从第 2 章起，每章的示例文件按 `ch02/xxx.ts` 这样的目录组织，各章独立，互不依赖。你可以把课程仓库当成一个练习本，每章一个格子。
+
+## 课程路线与怎么学
+
+全课三个模块，十五章：
+
+1. **模块一（第 1–4 章）LangChain**：核心部件、LCEL 链式编排、RAG、工具调用与 Agent。
+2. **模块二（第 5–10 章）LangGraph**：图模型、状态与分支循环、持久化、人工介入、多 Agent 与生产化。
+3. **模块三（第 11–15 章）Ticket Polit 项目实战**：把前两模块的东西装进一个前后端完整的真实项目。
+
+三个学法建议：
+
+- **每章的代码都亲手敲一遍**，不要复制粘贴。LangChain 的大量细节（类型提示、报错信息）只有敲错一次才会注意到。
+- **先预测，再运行**。看到示例先猜输出，猜错了说明你脑子里模型行为的图景有偏差，这恰好是最有价值的时刻。
+- **卡住先看版本**。行为诡异时先 `npm list` 对版本，再看报错全文，最后才怀疑代码。
+
+## 小结
+
+本章干了四件事：用裸调 API 的演进看清了胶水代码从哪长出来；明确了 LangChain 是编排框架而不是调用封装；认清了生态里几个包和 LangGraph、LangSmith 的分工；搭好了一套能跑三家模型的环境。
+
+下一章进入 LangChain 的核心三件套：模型、提示词模板、输出解析器，以及把它们串起来的 LCEL。
+
+## 自测
+
+1. 「LangChain 就是封装各家大模型 API 的库」这句话错在哪？
+2. 一个中文汉字大约折多少 token？为什么长对话会越来越贵？
+3. `.env` 文件为什么要加进 `.gitignore`？如果把密钥提交了，正确的补救动作是什么？
+4. 用 `ChatOpenAI` 接 DeepSeek 时，`baseURL` 起了什么作用？
+
+参考答案：1. 封装调用只是底层能力，核心价值是把模型、模板、解析器等部件组合成可维护的流水线。2. 约 1 到 2 个；多轮对话要把历史消息全部重发，token 随轮数累积。3. 防止密钥泄露；已提交的话立即去平台吊销并重新生成，再清理 git 历史。4. 把请求指向 DeepSeek 的 OpenAI 兼容端点，从而复用同一个客户端。

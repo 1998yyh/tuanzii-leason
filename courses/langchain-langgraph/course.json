@@ -1,0 +1,167 @@
+{
+  "schemaVersion": 1,
+  "slug": "langchain-langgraph",
+  "title": "LangChain + LangGraph 从入门到实战进阶",
+  "subtitle": "从诞生背景到原理进阶，再到 Ticket Polit 全栈项目实战",
+  "description": "面向 0 基础或有一定编程经验的 AI 全栈开发学习者，讲清 LangChain 与 LangGraph 的定位、异同与实战用法，并通过完整的 Ticket Polit 项目交付可运行成果。",
+  "duration": "待章节生成后评估",
+  "status": "manual-review",
+  "modules": [
+    {
+      "name": "模块一 LangChain 从入门到进阶",
+      "lessons": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "name": "模块二 LangGraph 从入门到进阶",
+      "lessons": []
+    },
+    {
+      "name": "模块三 Ticket Polit 项目实战",
+      "lessons": []
+    }
+  ],
+  "lessons": [
+    {
+      "number": 1,
+      "title": "LangChain 是什么：从「会调 API」到「会做 AI 应用」",
+      "time": "待定",
+      "summary": "从裸调 API 的痛点出发，认识 LangChain 的生态版图与它在 AI Agent 时代的角色。",
+      "status": "available",
+      "href": "lessons/01-what-is-langchain.html",
+      "markdown": "lessons/01-what-is-langchain.md"
+    },
+    {
+      "number": 2,
+      "title": "核心三件套与 LCEL：模型、提示词、输出解析",
+      "time": "待定",
+      "summary": "掌握 Runnable 协议与管道组合，把调模型拆成可替换的部件。",
+      "status": "available",
+      "href": "lessons/02-lcel-core-components.html",
+      "markdown": "lessons/02-lcel-core-components.md"
+    },
+    {
+      "number": 3,
+      "title": "给模型补上知识：RAG 与检索增强实战",
+      "time": "待定",
+      "summary": "从文档加载到向量检索，建成一条可问答的 RAG 链。",
+      "status": "available",
+      "href": "lessons/03-rag-retrieval.html",
+      "markdown": "lessons/03-rag-retrieval.md"
+    },
+    {
+      "number": 4,
+      "title": "工具调用与 Agent：LangChain 的天花板在哪里",
+      "time": "待定",
+      "summary": "手写 Agent 循环看清机制，理解为什么复杂编排需要 LangGraph。",
+      "status": "available",
+      "href": "lessons/04-tools-and-agents.html",
+      "markdown": "lessons/04-tools-and-agents.md"
+    },
+    {
+      "number": 5,
+      "title": "LangGraph 是什么：从链到图的必然",
+      "time": "待定",
+      "summary": "把手写 Agent 循环抽象成状态、节点、边，理解图编排的设计动机。",
+      "status": "available",
+      "href": "lessons/05-why-langgraph.html",
+      "markdown": "lessons/05-why-langgraph.md"
+    },
+    {
+      "number": 6,
+      "title": "第一张图：State、Node、Edge 实战",
+      "time": "待定",
+      "summary": "跑通最小图，掌握 Reducer 与状态更新语义。",
+      "status": "available",
+      "href": "lessons/06-first-graph.html",
+      "markdown": "lessons/06-first-graph.md"
+    },
+    {
+      "number": 7,
+      "title": "分支与循环：条件边让图活起来",
+      "time": "待定",
+      "summary": "用条件边重建 Agent 循环，掌握循环终止与并行分支。",
+      "status": "available",
+      "href": "lessons/07-conditional-edges.html",
+      "markdown": "lessons/07-conditional-edges.md"
+    },
+    {
+      "number": 8,
+      "title": "记忆与持久化：Checkpointer 让图记住一切",
+      "time": "待定",
+      "summary": "实现可重启续聊的 Agent，理解快照、回放与长短期记忆分层。",
+      "status": "available",
+      "href": "lessons/08-checkpointer-memory.html",
+      "markdown": "lessons/08-checkpointer-memory.md"
+    },
+    {
+      "number": 9,
+      "title": "人在回路：中断、审批与流式输出",
+      "time": "待定",
+      "summary": "用 interrupt/resume 实现人工审批，掌握三种粒度的流式输出。",
+      "status": "available",
+      "href": "lessons/09-human-in-the-loop.html",
+      "markdown": "lessons/09-human-in-the-loop.md"
+    },
+    {
+      "number": 10,
+      "title": "进阶：多 Agent、子图与生产化",
+      "time": "待定",
+      "summary": "Supervisor 多 Agent 协作、子图封装、LangSmith 观测与部署决策。",
+      "status": "available",
+      "href": "lessons/10-multi-agent-production.html",
+      "markdown": "lessons/10-multi-agent-production.md"
+    },
+    {
+      "number": 11,
+      "title": "项目导览：需求、架构与工程初始化",
+      "time": "待定",
+      "summary": "解读 Ticket Polit 需求与技术方案，搭好前后端骨架并联通。",
+      "status": "available",
+      "href": "lessons/11-project-kickoff.html",
+      "markdown": "lessons/11-project-kickoff.md"
+    },
+    {
+      "number": 12,
+      "title": "后端地基：数据模型、鉴权与核心 API",
+      "time": "待定",
+      "summary": "按后端技术方案落地领域模型与核心业务接口。",
+      "status": "available",
+      "href": "lessons/12-backend-foundation.html",
+      "markdown": "lessons/12-backend-foundation.md"
+    },
+    {
+      "number": 13,
+      "title": "后端 AI 内核：LangGraph Agent 工作流落地",
+      "time": "待定",
+      "summary": "把 AI 需求翻译成图设计，实现带持久化与流式输出的 Agent 工作流。",
+      "status": "available",
+      "href": "lessons/13-agent-workflow.html",
+      "markdown": "lessons/13-agent-workflow.md"
+    },
+    {
+      "number": 14,
+      "title": "前端实现：页面、状态与 AI 交互体验",
+      "time": "待定",
+      "summary": "按前端技术方案实现全部页面与流式 AI 交互体验。",
+      "status": "available",
+      "href": "lessons/14-frontend-implementation.html",
+      "markdown": "lessons/14-frontend-implementation.md"
+    },
+    {
+      "number": 15,
+      "title": "联调、测试、部署与复盘",
+      "time": "待定",
+      "summary": "端到端联调排错、测试与部署落地，复盘全课技术决策。",
+      "status": "available",
+      "href": "lessons/15-deploy-and-review.html",
+      "markdown": "lessons/15-deploy-and-review.md"
+    }
+  ],
+  "references": [],
+  "plannedLessons": []
+}

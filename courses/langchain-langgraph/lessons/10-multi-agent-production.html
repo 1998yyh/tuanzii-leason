@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>进阶：多 Agent、子图与生产化 · LangChain + LangGraph 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">LangChain + LangGraph 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">本章要解决的问题</a></li><li><a href="#h-3">多 Agent 的三种组织形态</a></li><li><a href="#h-4">Supervisor 实战：调度员 + 两个专员</a></li><li><a href="#h-5">子图：把一张图变成一个节点</a></li><li><a href="#h-6">State 设计的演进：从消息到业务字段</a></li><li><a href="#h-7">观测：用 LangSmith 看清每一次执行</a></li><li><a href="#h-9">部署决策：三种形态怎么选</a></li><li><a href="#h-10">什么时候不要多 Agent</a></li><li><a href="#h-11">模块二收束：你现在拥有什么</a></li><li><a href="#h-12">实战预告：Ticket Polit</a></li><li><a href="#h-13">动手练习</a></li><li><a href="#h-14">小结</a></li><li><a href="#h-15">自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 10 章 进阶：多 Agent、子图与生产化</h1>
+<blockquote><p>一句话总结：掌握 Supervisor 多 Agent 协作与子图封装，用 LangSmith 看清每次执行，建立「什么时候该上多 Agent、怎么部署」的决策标准。</p></blockquote>
+<h2 id="h-2">本章要解决的问题</h2>
+<p>到第 9 章为止，你的工具箱里是一个 Agent 打天下。真实系统里活会多到一个人干不完：又要查资料、又要写报告、又要审校、又要对接外部系统。全塞进一个 Agent，工具列表越来越长，Prompt 越来越精神分裂——「你既是严谨的财务又是活泼的文案」，效果一定打折。</p>
+<p>本章回答三件事：多个 Agent 怎么组织？复杂的图怎么分包管理？做出来的东西怎么观测、怎么上线？这是模块二的收官章，之后你就进真实项目了。</p>
+<h2 id="h-3">多 Agent 的三种组织形态</h2>
+<p>先建立分类，再谈实现。业界沉淀下来的多 Agent 结构主要是三种：</p>
+<p><strong>Supervisor（主管调度）</strong>：一个「主管」Agent 看任务，决定派给哪个「专员」Agent，专员干完把结果交回主管，主管决定下一步或收尾。像项目经理带团队。适合：任务类型差异大、需要统一入口的场景——客服路由、研发助手调度。</p>
+<p><strong>Handoff（移交）</strong>：Agent 之间平级，谁发现自己接不住，就把对话连同控制权移交给更合适的同事，移交后自己退场。像客服转接。适合：对话式场景，用户不需要知道背后换人了。</p>
+<p><strong>层级子图（Hierarchical）</strong>：把一张完整的图当作另一张图的一个节点。团队内部怎么分工是团队自己的事，对外只暴露「给我输入，还你结果」。适合：系统大到需要模块化，或某个环节本身是个复杂流程。</p>
+<p>三种形态不互斥，真实系统常是「层级子图套 Supervisor」：对外是一个节点，对内是一个主管带几个专员。本章重点实现 Supervisor（最常用）和子图（最重要的工程手段）。</p>
+<h2 id="h-4">Supervisor 实战：调度员 + 两个专员</h2>
+<p>场景：一个助手入口，数学问题给「数学专员」（带计算工具的 Agent），闲聊直接答。用第 4 章的 <code>createAgent</code> 造专员，用图做调度：</p>
+<pre class="code"><code class="lang-ts">import { StateGraph, Annotation, START, END } from &quot;@langchain/langgraph&quot;;
+import { createAgent } from &quot;langchain&quot;;
+import { ChatOpenAI } from &quot;@langchain/openai&quot;;
+
+const model = new ChatOpenAI({
+  model: &quot;deepseek-v4-flash&quot;,
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  configuration: { baseURL: &quot;https://api.deepseek.com&quot; },
+});
+
+// 专员：带工具的完整 Agent，createAgent 一行造好
+const mathAgent = createAgent({
+  model,
+  tools: [add],  // 第 4 章的加法工具
+  systemPrompt: &quot;你是数学专员，计算必须用工具。&quot;,
+});
+
+// Supervisor 的状态：问题进来，答案出去
+const State = Annotation.Root({
+  question: Annotation&lt;string&gt;({ reducer: (_c, u) =&gt; u, default: () =&gt; &quot;&quot; }),
+  answer: Annotation&lt;string&gt;({ reducer: (_c, u) =&gt; u, default: () =&gt; &quot;&quot; }),
+});
+
+// 专员被包装成图节点：图的 State 翻译成 Agent 的消息，再把 Agent 结果翻译回来
+const callMathAgent = async (state: typeof State.State) =&gt; {
+  const r = await mathAgent.invoke({ messages: [{ role: &quot;user&quot;, content: state.question }] });
+  return { answer: String(r.messages.at(-1).content) };
+};
+
+const chatNode = async (state: typeof State.State) =&gt; {
+  const r = await model.invoke(state.question);
+  return { answer: String(r.content) };
+};
+
+// 主管节点就是路由：看问题决定派给谁
+const graph = new StateGraph(State)
+  .addNode(&quot;mathAgent&quot;, callMathAgent)
+  .addNode(&quot;chat&quot;, chatNode)
+  .addConditionalEdges(START, (state) =&gt;
+    state.question.includes(&quot;算&quot;) || state.question.includes(&quot;多少&quot;) ? &quot;mathAgent&quot; : &quot;chat&quot;
+  )
+  .addEdge(&quot;mathAgent&quot;, END)
+  .addEdge(&quot;chat&quot;, END)
+  .compile();
+
+const out = await graph.invoke({ question: &quot;帮我算 19 加 23&quot;, answer: &quot;&quot; });
+console.log(out.answer);</code></pre>
+<p>读一下这个结构的职责划分：<strong><code>createAgent</code> 负责「专员怎么干活」，图负责「活派给谁」</strong>。调度规则是确定性的（包含「算」就派数学专员），写在条件边上——第 7 章的纪律：流转逻辑长在图上。更聪明的调度可以让一个 LLM 节点先做分类（「这是数学问题还是闲聊？」用第 2 章的结构化输出拿类型），路由读分类结果，这就是生产里常见的「LLM 主管」。</p>
+<p>注意包装节点的翻译工作：图 State 的字段和 Agent 的消息数组是两种数据形态，<code>callMathAgent</code> 在两者之间转换。<strong>每个 Agent 的输入输出都是消息，而图的 State 是业务字段</strong>——这层翻译是 Supervisor 模式里最重要的适配点，模块三会反复见到。</p>
+<h2 id="h-5">子图：把一张图变成一个节点</h2>
+<p>当「专员」本身也是一张复杂图（比如数学专员内部还要先判题型再选方法），把它直接塞进父图会让父图臃肿难读。子图的解法：<strong>把子流程单独建成图、编译好，整个当作父图的一个节点</strong>。</p>
+<pre class="code"><code class="lang-ts">// 子图：内部的 State、节点、边完全独立
+const subGraph = new StateGraph(State)
+  .addNode(&quot;innerStep&quot;, (s) =&gt; ({ answer: &quot;子图处理结果&quot; }))
+  .addEdge(START, &quot;innerStep&quot;)
+  .addEdge(&quot;innerStep&quot;, END)
+  .compile();                    // 先编译成可执行图
+
+const parent = new StateGraph(State)
+  .addNode(&quot;sub&quot;, subGraph)      // 编译产物直接当节点
+  .addEdge(START, &quot;sub&quot;)
+  .addEdge(&quot;sub&quot;, END)
+  .compile();</code></pre>
+<p>关键在 <strong>State 的对接</strong>：父子图用同一个字段名，状态自然贯通；字段名不同，就写个包装节点做翻译（和上面 Agent 包装同理）。工程纪律是：<strong>子图对外只暴露最小字段</strong>——它需要读什么、产出什么，写在文档里；内部字段再多，父图也看不见、不该依赖。</p>
+<p>子图的价值和函数抽象一模一样：封装复杂度、可独立测试、可多处复用。一张上百节点的巨型图没法维护，但「五张子图拼起来的图」可以。</p>
+<h2 id="h-6">State 设计的演进：从消息到业务字段</h2>
+<p>回看本模块用过的 State，其实走过了一条清晰的分水岭。第 6–9 章大多用 MessagesAnnotation——消息即状态，Agent 场景的最小形态。本章的 Supervisor 用的是 <code>{ question, answer }</code>——纯业务字段，消息藏在各 Agent 内部。</p>
+<p>真实系统的 State 通常是两者的混合：</p>
+<pre class="code"><code class="lang-ts">import { Annotation, addMessages } from &quot;@langchain/langgraph&quot;;
+import type { BaseMessage } from &quot;@langchain/core/messages&quot;;
+
+const TicketState = Annotation.Root({
+  // 业务字段：流程的骨架数据
+  ticketId: Annotation&lt;string&gt;({ reducer: (_c, u) =&gt; u, default: () =&gt; &quot;&quot; }),
+  category: Annotation&lt;string&gt;({ reducer: (_c, u) =&gt; u, default: () =&gt; &quot;&quot; }),
+  approved: Annotation&lt;boolean&gt;({ reducer: (_c, u) =&gt; u, default: () =&gt; false }),
+  // 消息字段：与模型交互的完整轨迹（追加语义，和 MessagesAnnotation 同款 reducer）
+  messages: Annotation&lt;BaseMessage[]&gt;({ reducer: addMessages, default: () =&gt; [] }),
+});</code></pre>
+<p>设计的原则就一条：<strong>「流程要知道的事」进业务字段，「模型说过的话」进消息字段</strong>。分类结果、审批标记、工单号这些是流程数据，路由和条件边读它们；对话历史是模型的上下文，LLM 节点读它。分清楚了，图的结构和数据就同构了——看 State 定义就能猜到流程长什么样。模块三的工单 State，第一眼看到这个定义你会觉得眼熟。</p>
+<h2 id="h-7">观测：用 LangSmith 看清每一次执行</h2>
+<p>图越复杂，「它刚才为什么这么走」越难回答。<code>console.log</code> 打轨迹在第 4 章够用，在多 Agent 场景就是灾难。LangSmith 是官方的观测平台：每次执行的完整轨迹——哪个节点、输入输出、调了哪个模型、多少 token、耗时多久——自动记录，可在网页上逐步回放。</p>
+<p>接入简单到不像话，设几个环境变量就行：</p>
+<pre class="code"><code class="lang-bash"># .env 里追加（密钥在 smith.langchain.com 注册获取）
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_你的key
+LANGSMITH_PROJECT=ticket-polit   # 项目名，轨迹按项目归类</code></pre>
+<p>代码零改动。下次执行图或 Agent，打开 LangSmith 网页就能看到完整 trace：一张执行树，每个节点可展开看输入输出。<strong>第 4 章打印轨迹教的是「看什么」，LangSmith 把「看」变成了基础设施</strong>——过滤、搜索、跨天对比、团队共享。</p>
+<h3 id="h-8">读一次 trace：以上面的 Supervisor 为例</h3>
+<p>跑一次 Supervisor 后，LangSmith 里这条 trace 的读法是这样的：最顶层是一次图执行（总耗时、总 token 在标题栏）；展开第一层，看到各节点按执行顺序排列——本例先经过条件边路由（几乎零耗时，看不到模型调用），然后命中 <code>mathAgent</code> 节点；再展开这个节点，里面嵌着专员 Agent 自己的执行树：<code>model_request</code>（一次 LLM 调用，能看到发给模型的完整消息和 token 用量）→ <code>tools</code>（add 工具的输入输出）→ 又回到 <code>model_request</code>（第二次 LLM 调用，产出最终回答）。</p>
+<p>三层结构一眼看穿：图的路由层、Agent 的循环层、模型的调用层。排查「主管为什么派错人」看路由那一刻的 State；排查「专员为什么算错」看 tools 的参数；排查「为什么花了这么多 token」看两次 model_request 的用量对比。没有账号时，本地替代是用第 4 章的轨迹打印法遍历返回的 messages，信息一样，只是少了可视化和跨天检索。</p>
+<p>对多 Agent 系统，观测不是加分项而是必需品：主管为什么派错人、专员在哪一步走偏，没有 trace 只能靠猜。学习的建议：从本章起所有实验都开着 tracing，习惯了「执行必有轨迹」的工作方式。</p>
+<h2 id="h-9">部署决策：三种形态怎么选</h2>
+<p>图做好了怎么变成服务？三条路，按团队情况选：</p>
+<p><strong>当库用（嵌入式）</strong>：图就是应用代码的一部分，<code>import</code> 进来直接调。你的 Express 服务里 invoke 就完事。适合：绝大多数自建应用，模块三的工单项目就是这条路。零额外成本，运维上没有任何新东西。</p>
+<p><strong>自托管 LangGraph Server</strong>：官方提供的服务化方案，把图以 HTTP API 形式暴露，自带任务队列、流式端点、Studio 调试界面。适合：图要被多个客户端（Web、App、其他服务）调用，或需要官方的任务管理设施。代价是多一套服务要运维。</p>
+<p><strong>LangGraph Platform（云托管）</strong>：官方全托管，部署、扩缩容、监控全包。适合：不想碰运维、接受供应商绑定的团队。代价是花钱和数据出域（国内团队要评估合规）。</p>
+<p>决策顺序建议：默认当库用；出现「多个消费方」「需要跨语言调用」再考虑 Server；明确不想运维才上 Platform。别为了用新东西而用——多一套基础设施就是多一份半夜被叫醒的概率。</p>
+<h2 id="h-10">什么时候不要多 Agent</h2>
+<p>收官之前泼盆冷水。多 Agent 是本届课程最酷的概念，也是最容易被滥用的。三个「不要」的信号：</p>
+<ul><li><strong>一个 Agent 加几个工具能解决的，不要拆。</strong> 拆成多 Agent 带来的是状态翻译、调度规则、跨 Agent 调试三份新成本。</li><li><strong>流程是固定顺序的，不要 Supervisor。</strong> 「先 A 后 B 再 C」用直线图或链就够了，主管调度是为「派谁不确定」准备的。</li><li><strong>团队还没有观测手段，不要上多 Agent。</strong> 单 Agent 出问题是排查，多 Agent 出问题是破案。先接 LangSmith，再谈拆分。</li></ul>
+<h2 id="h-11">模块二收束：你现在拥有什么</h2>
+<p>六章走完，盘一下家底：</p>
+<ul><li><strong>图模型</strong>（第 5 章）：状态、节点、边，循环图 vs DAG；</li><li><strong>骨架</strong>（第 6 章）：Annotation 定义 State，reducer 定语义，compile 出 Runnable；</li><li><strong>流转</strong>（第 7 章）：条件边、循环、并行扇出汇合、recursionLimit；</li><li><strong>记忆</strong>（第 8 章）：Checkpointer、Thread、快照回放、长短记忆分层；</li><li><strong>控制</strong>（第 9 章）：interrupt/resume、静态断点、时间旅行、三种流式；</li><li><strong>组织</strong>（本章）：Supervisor、子图、LangSmith、部署决策。</li></ul>
+<p>回到第 1 章那张复杂度阶梯：L1 流水线、L2 工具 Agent、L3 有状态工作流、L4 多 Agent 系统——你每一层都有亲手实现过的代码了。</p>
+<h2 id="h-12">实战预告：Ticket Polit</h2>
+<p>模块三，我们把这些全部装进一个真实产品：<strong>Ticket Polit，一个 AI 工单副驾驶</strong>。用户提交工单，LangGraph 工作流自动分类：知识库能答的走 RAG 直接回复（第 3 章）；退款类工单必须人工审批（第 9 章）；每个工单的处理过程全程持久化、可回放（第 8 章）；前端实时展示 Agent 的每一步（第 9 章流式）；后端 Express，前端 Vue，全栈 TypeScript。</p>
+<p>五章交付：需求与架构、后端地基、AI 内核、前端实现、联调部署。写法和前十章不同：不再是一个个孤立概念，而是「这个功能用户要用，怎么实现」的真实推进。准备好。</p>
+<h2 id="h-13">动手练习</h2>
+<ol><li>给 Supervisor 加第三个专员「翻译专员」（第 2 章的翻译链包装成 Agent），主管按「数学/翻译/闲聊」三路调度。判据：三类问题各走对路，打印最终 State 验证。</li><li>把「数学专员」改成子图实现（内部两个节点：判题型、计算），父图保持不变。判据：对外行为一致，父图代码零改动。</li><li>接上 LangSmith，跑一次 Supervisor，在网页上找到主管路由的那一刻，看看它读到的 State 是什么。判据：能说出「分类发生在哪个节点、依据哪个字段」。没有 LangSmith 账号的替代做法：在路由函数里 <code>console.log(state)</code>，回答同样两个问题。</li></ol>
+<h2 id="h-14">小结</h2>
+<p>本章完成了从「会画图」到「能组织系统」的跳跃：多 Agent 的 Supervisor、Handoff、层级子图三种形态；子图封装让大图可维护；LangSmith 用几个环境变量换来全程观测；部署三形态的选择标准，以及同样重要的——什么时候不要多 Agent。</p>
+<p>模块二到此结束。下一章起，没有新概念，只有一个真项目。</p>
+<h2 id="h-15">自测</h2>
+<ol><li>Supervisor 和 Handoff 的区别是什么？各适合什么交互形态？</li><li>把 <code>createAgent</code> 造好的 Agent 接进图时，包装节点做的「翻译」指什么？</li><li>子图和「把节点写多一点的大图」相比，工程价值在哪？</li><li>「先接 LangSmith，再上多 Agent」这条建议背后的理由是什么？</li></ol>
+<p>参考答案：1. Supervisor 有中心调度者，专员结果交回主管统一决策，适合任务分派型入口；Handoff 平级移交控制权，适合对话转接、用户对切换无感。2. 图 State 是业务字段、Agent 输入输出是消息数组，包装节点在两种数据形态间双向转换。3. 封装复杂度、可独立测试、可复用，对外只暴露最小字段契约；巨型平铺图不具备这些。4. 多 Agent 的故障表现为跨节点、跨执行体的复合问题，没有轨迹观测几乎无法定位；观测手段是拆分的前提而不是事后的补充。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="09-human-in-the-loop.html">← 第 9 章</a></span>
+    <span><a href="11-project-kickoff.html">第 11 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</body>
+</html>

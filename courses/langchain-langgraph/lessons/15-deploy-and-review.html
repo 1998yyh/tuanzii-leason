@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>联调、测试、部署与复盘 · LangChain + LangGraph 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">LangChain + LangGraph 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">本章任务：从「能跑」到「敢交」</a></li><li><a href="#h-3">联调清单：前后端对齐的七个核对点</a></li><li><a href="#h-4">排错实战：三个真问题</a></li><li><a href="#h-8">旅程测试：把验收剧本变成代码</a></li><li><a href="#h-9">生产构建与同域部署</a></li><li><a href="#h-10">复盘：每个决策的回头看</a></li><li><a href="#h-12">全课收束</a></li><li><a href="#h-13">自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 15 章 联调、测试、部署与复盘</h1>
+<blockquote><p>一句话总结：用联调清单和旅程测试把系统钉死，完成生产构建与同域部署，复盘全项目的技术决策，收束整门课程。</p></blockquote>
+<h2 id="h-2">本章任务：从「能跑」到「敢交」</h2>
+<p>前四章的验收都是单点的：后端 curl 通、前端页面通。本章把它们变成一套可重复验证的整体，然后部署成别人能访问的服务，最后停下来复盘——做过的每个决策，哪些是对的，哪些下次会换做法。里程碑 M4：旅程测试脚本全绿，生产构建在本机以生产形态跑通。</p>
+<h2 id="h-3">联调清单：前后端对齐的七个核对点</h2>
+<p>前后端分开验收过 ≠ 合起来没问题。联调期的问题几乎全是「约定不一致」，按这份清单逐条核对，比瞎试高效得多：</p>
+<ol><li><strong>路径一致</strong>：前端 <code>api.ts</code> 写的每个路径，后端都有对应路由（<code>/api/tickets</code>、<code>/api/tickets/:id/messages</code>、<code>/api/approvals/:ticketId/decide</code>）。一个字母的出入就是 404。</li><li><strong>字段一致</strong>：后端返回的 <code>reply</code>、<code>status</code>，前端解构的名字相同；SSE 事件的结构（<code>{ 节点名: { 字段 } }</code>）前后端理解一致。</li><li><strong>token 一致</strong>：前端 localStorage 里的 token 值，是后端硬编码表里的 key。「401 满天飞」多半是这边存了个旧值。</li><li><strong>状态码语义一致</strong>：前端把非 2xx 都当错误处理了吗？后端的 400/401/403 消息格式统一吗？</li><li><strong>SSE 头三件套</strong>：<code>text/event-stream</code>、<code>no-cache</code>、<code>keep-alive</code>，缺一个都可能在某一层被缓冲。</li><li><strong>代理生效</strong>：<code>vite.config.ts</code> 改了要重启 dev server；浏览器 Network 面板里请求应发往 5173（Vite）而不是 3000。</li><li><strong>时间基准</strong>：created_at 是后端生成的，前端别自己造——两处时间源必有不一致。</li></ol>
+<p>这份清单值得存进项目 README。下次联调任何前后端项目，它都通用。</p>
+<h2 id="h-4">排错实战：三个真问题</h2>
+<h3 id="h-5">问题一：SSE 本地好好的，上服务器就不流了</h3>
+<p>症状：本地开发流式完美，部署到服务器后，前端收不到逐条事件，最后一次性全到。</p>
+<p>排查路径：本地 Vite 代理不缓冲 → 服务器上多了 nginx 反向代理 → <strong>nginx 默认会缓冲上游响应</strong>，攒够一批才发给客户端，SSE 的「实时」就此阵亡。</p>
+<p>修复：nginx 对该路径关闭缓冲并放行长连接：</p>
+<pre class="code"><code class="lang-nginx">location /api/ {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_http_version 1.1;
+  proxy_set_header Connection &quot;&quot;;
+  proxy_buffering off;        # 关键：不缓冲，收到就转发
+  proxy_read_timeout 3600s;   # 长连接别被默认超时掐断
+}</code></pre>
+<p>教训提炼：<strong>凡是「本地好、线上坏」的网络行为差异，先怀疑中间层</strong>（代理、网关、CDN），而不是自己的代码。SSE、文件下载、WebSocket 都是中间层敏感型。</p>
+<h3 id="h-6">问题二：生产环境的 CORS 又回来了</h3>
+<p>开发期靠 Vite 代理，前端不知道后端的存在。生产构建后没有 Vite 了，如果前端部署在 A 域、后端在 B 域，同源策略立刻回归。本项目的方案是<strong>同域部署</strong>：后端 Express 直接托管前端构建产物，页面和 API 同一个来源，CORS 问题从根上消失（下一节落地）。</p>
+<p>如果业务上必须分域（比如 API 要给多个客户端用），那就后端显式配置 CORS 头：放行指定来源、允许的头部（<code>x-token</code> 要在允许列表里）。原则收紧不放宽：<code>Access-Control-Allow-Origin: *</code> 配 token 鉴权等于把门钥匙挂门上。</p>
+<h3 id="h-7">问题三：重启之后，待审批的工单去哪了</h3>
+<p>这是验收持久化的关键实验，也是最容易被漏测的：提交一个退款工单（进入待审批）→ 重启后端 → 审批员批准 → 员工看到结果吗？</p>
+<p>应该看到。拆解为什么：工单在业务库（tickets.sqlite，文件）；冻结的流程在 checkpoints.sqlite（文件）；重启后 <code>buildGraph()</code> 重建内存索引和图结构，checkpointer 从文件读回冻结点；<code>decide</code> 用同样的 thread_id 把 resume 送回去。整条链没有一环依赖进程内存——这就是第 8 章「数据不依赖进程」的设计在买单。</p>
+<p>如果看不到结果，按序排查：checkpoints.sqlite 文件是否生成（启动时创建）；thread_id 拼接是否一致（<code>ticket-2</code> vs <code>2</code> 是两个世界）；decide 的 resume 值类型（<code>req.body.approved === true</code> 的严格比较，前端传 <code>&quot;true&quot;</code> 字符串会翻车）。</p>
+<h2 id="h-8">旅程测试：把验收剧本变成代码</h2>
+<p>前面每章的 curl 验收，本质是手动测试。手动的东西不会被执行第二次——把它写成脚本，以后每次改代码跑一遍，30 秒确认主干无恙。<code>server/scripts/journey.mts</code>：</p>
+<pre class="code"><code class="lang-ts">const BASE = &quot;http://localhost:3000&quot;;
+const emp = { &quot;Content-Type&quot;: &quot;application/json&quot;, &quot;x-token&quot;: &quot;emp-token&quot; };
+const admin = { &quot;Content-Type&quot;: &quot;application/json&quot;, &quot;x-token&quot;: &quot;admin-token&quot; };
+
+let passed = 0, failed = 0;
+async function check(name: string, fn: () =&gt; Promise&lt;void&gt;) {
+  try { await fn(); passed++; console.log(&quot;✓&quot;, name); }
+  catch (e) { failed++; console.error(&quot;✗&quot;, name, (e as Error).message); }
+}
+const api = (path: string, opts?: RequestInit) =&gt; fetch(BASE + path, opts);
+
+// 旅程 1：咨询工单全周期
+await check(&quot;咨询工单得到知识库回答&quot;, async () =&gt; {
+  const r = await api(&quot;/api/tickets&quot;, {
+    method: &quot;POST&quot;, headers: emp,
+    body: JSON.stringify({ title: &quot;住宿额度&quot;, description: &quot;一线城市住宿报销额度是多少&quot; }),
+  });
+  const j = await r.json();
+  if (j.status !== &quot;done&quot; || !j.reply?.length) throw new Error(&quot;未办结或无回复&quot;);
+});
+
+// 旅程 2：退款审批往返
+let refundId = 0;
+await check(&quot;退款工单进入待审批&quot;, async () =&gt; {
+  const r = await api(&quot;/api/tickets&quot;, {
+    method: &quot;POST&quot;, headers: emp,
+    body: JSON.stringify({ title: &quot;退款&quot;, description: &quot;申请退回多扣的 800 元&quot; }),
+  });
+  const j = await r.json();
+  if (j.status !== &quot;pending_approval&quot;) throw new Error(&quot;未进入待审批: &quot; + j.status);
+  refundId = j.id;
+});
+await check(&quot;员工无权审批(403)&quot;, async () =&gt; {
+  const r = await api(`/api/approvals/${refundId}/decide`, { method: &quot;POST&quot;, headers: emp, body: &quot;{}&quot; });
+  if (r.status !== 403) throw new Error(&quot;越权成功: &quot; + r.status);
+});
+await check(&quot;管理员批准后执行&quot;, async () =&gt; {
+  const r = await api(`/api/approvals/${refundId}/decide`, {
+    method: &quot;POST&quot;, headers: admin, body: JSON.stringify({ approved: true }),
+  });
+  const j = await r.json();
+  if (!j.reply?.includes(&quot;已执行&quot;)) throw new Error(&quot;未执行: &quot; + j.reply);
+});
+
+// 旅程 3：追问 SSE
+await check(&quot;追问收到 SSE 流&quot;, async () =&gt; {
+  const r = await api(&quot;/api/tickets/1/messages&quot;, {
+    method: &quot;POST&quot;, headers: emp, body: JSON.stringify({ content: &quot;审批流程呢&quot; }),
+  });
+  const text = await r.text();
+  if (!text.includes(&quot;data:&quot;) || !text.includes(&quot;[DONE]&quot;)) throw new Error(&quot;SSE 格式异常&quot;);
+});
+
+console.log(`\n${passed} 通过, ${failed} 失败`);
+process.exit(failed ? 1 : 0);</code></pre>
+<p>这叫<strong>旅程测试（journey test）</strong>：不测单个函数，测「一类用户的一次完整操作旅程」。它和单元测试不冲突，是不同层级的网——单测抓逻辑细节，旅程抓「系统拼起来是不是真的能用」。<code>npx tsx scripts/journey.mts</code>，全绿才敢说你没把主干改坏。</p>
+<h2 id="h-9">生产构建与同域部署</h2>
+<p><strong>前端构建</strong>：<code>cd web &amp;&amp; npm run build</code>，产物是 <code>dist/</code> 下的一堆静态文件（HTML/JS/CSS）。Vite 会把 TS 编译、打包、压缩一次做完。</p>
+<p><strong>后端托管静态文件</strong>：让 Express 把 <code>dist</code> 目录服务出去，并处理 SPA 路由回退：</p>
+<pre class="code"><code class="lang-ts">import path from &quot;node:path&quot;;
+
+const dist = path.resolve(&quot;../web/dist&quot;);
+app.use(express.static(dist));
+
+// SPA 回退：非 /api 的 GET 都返回 index.html，前端路由接管
+// （Vue Router 的 history 模式下，/tickets/3 这样的地址刷新时需要它）
+app.get(/^\/(?!api\/).*/, (_req, res) =&gt; {
+  res.sendFile(path.join(dist, &quot;index.html&quot;));
+});</code></pre>
+<p>SPA 回退值得解释一句：Vue Router 的 history 模式让 URL 长得像普通页面（<code>/tickets/3</code>），但这路由只存在于浏览器里。用户在这个地址上刷新，请求直接打到服务器，服务器没有对应的文件——所以约定「凡是GET 且不是 /api 的，都返回 index.html」，让前端路由从首页重新导航过去。不配它，一切正常，一刷新 404。</p>
+<p><strong>后端生产运行</strong>：开发用 tsx 图省事，生产建议编译成 JS 再跑，少一层运行时转换，启动更快、错误栈更干净。给 server 补一份 <code>tsconfig.json</code>：</p>
+<pre class="code"><code class="lang-json">{
+  &quot;compilerOptions&quot;: {
+    &quot;target&quot;: &quot;ES2022&quot;,
+    &quot;module&quot;: &quot;NodeNext&quot;,
+    &quot;moduleResolution&quot;: &quot;NodeNext&quot;,
+    &quot;outDir&quot;: &quot;dist&quot;,
+    &quot;rootDir&quot;: &quot;src&quot;,
+    &quot;strict&quot;: true,
+    &quot;esModuleInterop&quot;: true,
+    &quot;skipLibCheck&quot;: true
+  },
+  &quot;include&quot;: [&quot;src&quot;]
+}</code></pre>
+<p><code>module: NodeNext</code> 表示按 Node 原生 ESM 规则处理模块——这也是本章代码里 import 一直写 <code>.js</code> 后缀的原因（<code>./db.js</code>）：TS 源码编译后路径不变，Node 按 ESM 规范要求显式后缀。然后在 package.json 里加 scripts：</p>
+<pre class="code"><code class="lang-json">{
+  &quot;scripts&quot;: {
+    &quot;dev&quot;: &quot;tsx watch --env-file=.env src/index.ts&quot;,
+    &quot;build&quot;: &quot;tsc&quot;,
+    &quot;start&quot;: &quot;node --env-file=.env dist/index.js&quot;,
+    &quot;journey&quot;: &quot;tsx scripts/journey.mts&quot;
+  }
+}</code></pre>
+<p>开发 <code>npm run dev</code>，上线 <code>npm run build &amp;&amp; npm run start</code>，测试 <code>npm run journey</code>。进程守护用 pm2（<code>pm2 start dist/index.js --name ticket-polit</code>）：崩溃自动拉起、开机自启、日志集中——单机部署的标配套件。</p>
+<p><strong>环境变量</strong>：生产环境 <code>.env</code> 不进 git 的纪律不变，由部署环境注入（pm2 的 ecosystem 文件、或系统的环境变量）。模型密钥出现在任何客户端可见的地方（前端代码、构建产物、接口响应）都算事故，发布前全局搜一遍。</p>
+<p>部署后最后一步：把「问题三」的重启实验在生产形态下再做一遍。能过，M4 达成。</p>
+<h2 id="h-10">复盘：每个决策的回头看</h2>
+<table><thead><tr><th>决策</th><th>回头看</th></tr></thead><tbody><tr><td>两个数据库分离</td><td>正确。重启实验、业务查询都受益；代价是要记两个文件</td></tr><tr><td>thread_id = ticket-{id}</td><td>正确。审批、追问、恢复全靠它定位，业务含义清晰</td></tr><tr><td>MemoryVectorStore</td><td>现阶段正确（三份文档）。知识库上百篇就得换 pgvector 类方案</td></tr><tr><td>硬编码 token</td><td>教学可接受。真实系统必须换 JWT/Session，优先级高</td></tr><tr><td>审批结果不存流水</td><td>已知妥协。真实系统需要 approvals 表做审计</td></tr><tr><td>SSE 而非 WebSocket</td><td>正确。单向推送场景它最简，nginx 调通后零维护</td></tr><tr><td>messages 不进业务库</td><td>正确但留了作业：详情页历史对话要从 getState 读，目前只能看本次会话</td></tr></tbody></table>
+<h3 id="h-11">可扩展方向（下一版做什么）</h3>
+<p>按价值排序：消息历史展示（详情页调 <code>graph.getState</code> 渲染完整轨迹，前后端各加十行）；对话成本控制（第 8 章的截断或摘要策略，thread 一长寿必须做）；长期记忆（Store 记用户偏好，「这个员工偏好简洁回复」）；LangSmith 接入（生产排障刚需，几个环境变量的事）；PostgresSaver（多实例部署的前提）；人工工单队列（handoff 节点目前只是回复一句话，真实系统要落库排队）。</p>
+<h2 id="h-12">全课收束</h2>
+<p>十五章走完，回到第 1 章的那张复杂度阶梯：</p>
+<ul><li>L1 固定流水线，你在第 2、3 章用 LCEL 做过；</li><li>L2 工具型 Agent，你在第 4 章手写循环、用 createAgent 收口；</li><li>L3 有状态工作流，你在第 8、9 章加了持久化和人工介入；</li><li>L4 多 Agent 系统，第 10 章见过组织形态；</li><li>然后在 Ticket Polit 里，把它们全部塞进了一个真实产品。</li></ul>
+<p>最后留一句方法论，比任何 API 都值得带走：<strong>先用简单的工具把东西做出来，让真实的复杂度来敲门，再换更大的锤子。</strong> LangChain 之于裸调 API、LangGraph 之于 for 循环、多 Agent 之于单 Agent，都是这个逻辑的重复上演。能判断「现在该不该升级工具」的你，已经比会背所有 API 的你值钱得多。</p>
+<h2 id="h-13">自测</h2>
+<ol><li>「本地好、线上坏」的 SSE 问题，第一嫌疑人是谁？为什么？</li><li>SPA 回退规则解决什么问题？不配会出现什么症状？</li><li>重启后审批能继续，依赖链上的哪几个环节都不依赖进程内存？</li><li>旅程测试和单元测试各抓什么问题？为什么说它们不冲突？</li></ol>
+<p>参考答案：1. 中间层代理（nginx 等）的响应缓冲；SSE 依赖边收边发，缓冲会把实时流攒成批量响应。2. history 模式的前端路由 URL 在服务器上不存在对应文件；不配时子页面刷新返回 404。3. 工单数据在业务库文件、流程冻结点在 checkpoints 文件、thread_id 由 URL 参数重建、图结构启动时重建。4. 单测抓函数级逻辑细节，旅程抓系统拼装后的端到端可用性；层级不同，互相补充。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="14-frontend-implementation.html">← 第 14 章</a></span>
+    <span><a href="../index.html">返回课程首页 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</body>
+</html>

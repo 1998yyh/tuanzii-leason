@@ -1,0 +1,332 @@
+# 第 2 章 核心三件套与 LCEL：模型、提示词、输出解析
+
+> 一句话总结：掌握 ChatModel、PromptTemplate、OutputParser 三个标准部件，理解 Runnable 协议，学会用 LCEL 把它们像水管一样接成一条链。
+
+## 本章要解决的问题
+
+第 1 章最后，我们的代码长这样：构造一个 `ChatOpenAI`，调 `invoke`，拿到回答。这是单个部件的用法。真实应用里，调用模型只是中间一环，前面有 Prompt 的拼装，后面有输出的解析。本章回答两个问题：LangChain 把「调模型」拆成了哪几个可替换的部件？这些部件怎么连接成一条流水线？
+
+学完你会得到一个心智模型：**LangChain 里几乎所有东西都是水管（Runnable），水管有统一的接口，连接水管的动作叫 pipe。**
+
+## 第一件套：ChatModel，所有模型一个模样
+
+### 统一接口的意义
+
+`ChatOpenAI`、`ChatAnthropic` 都叫 ChatModel（聊天模型）。它们共享同一套调用方式：`invoke`（单次）、`batch`（批量）、`stream`（流式）。换模型不动业务代码，这一点第 1 章已经见过。本章要看的是另外两个细节：输入长什么样，输出长什么样。
+
+### 输入：字符串只是语法糖，真面目是消息数组
+
+`invoke` 可以接收一个字符串，也可以接收一个消息数组。字符串会被自动包成一条 `user` 消息。想精确控制，就用消息对象：
+
+```ts
+import { ChatOpenAI } from "@langchain/openai";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+
+const model = new ChatOpenAI({
+  model: "deepseek-v4-flash",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  configuration: { baseURL: "https://api.deepseek.com" },
+});
+
+const response = await model.invoke([
+  new SystemMessage("你是严谨的翻译引擎，只输出译文。"),
+  new HumanMessage("把「亡羊补牢」翻译成英文。"),
+]);
+```
+
+`SystemMessage` 和 `HumanMessage` 对应第 1 章讲的消息角色。多轮对话就是往数组里继续追加 `AIMessage`（模型的历史回答）和新的 `HumanMessage`：
+
+```ts
+const history = [
+  new SystemMessage("你是耐心的编程老师。"),
+  new HumanMessage("什么是闭包？"),
+];
+
+const reply1 = await model.invoke(history);
+history.push(reply1);                          // 模型的回答入列，角色是 assistant
+history.push(new HumanMessage("那它有什么用？"));
+
+const reply2 = await model.invoke(history);    // 模型看得见上一轮，答得上"它"
+```
+
+手动维护 `history` 数组是理解机制的好办法，但它只活在内存里，进程一关就没了。第 8 章的 Checkpointer 会把这件事做成可持久化、可恢复的能力，现在先建立「多轮 = 消息数组越攒越长」的直觉。
+
+### 输出：不是字符串，是 AIMessage
+
+`invoke` 返回的不是文本，而是一个 `AIMessage` 对象。最常用的两个属性：
+
+```ts
+console.log(response.content);           // 文本内容："Better late than never."
+console.log(response.usage_metadata);    // token 用量：{ input_tokens: 35, output_tokens: 8, ... }
+```
+
+`usage_metadata` 值得养成查看的习惯：它是你控制成本和排查「上下文塞爆」的第一手数据。如果某次调用的 `input_tokens` 远超预期，八成是历史消息或检索内容塞多了。
+
+### 常用构造参数
+
+`new ChatOpenAI({...})` 里，除了 `model` 和密钥，常用的还有：`temperature`（第 1 章讲过，控制随机性）、`maxTokens`（限制输出长度，直接控制费用上限）、`timeout`（超时毫秒数）、`maxRetries`（失败自动重试次数，默认就有，对付偶发的网络抖动）。这些参数对所有 ChatModel 生效，这也是统一接口的一部分。
+
+## 第二件套：PromptTemplate，把字符串拼接变成模板
+
+### 为什么字符串拼接不够用
+
+第 1 章的裸调代码里，Prompt 是手写模板字符串拼出来的。短的时候没问题，长起来全是坑：变量插值写错一个括号、想在多处复用同一段角色设定、想让非程序员同事改文案却怕他们碰坏代码。
+
+PromptTemplate 的做法是把 Prompt 声明成带变量的模板，变量用花括号标出：
+
+```ts
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+
+const prompt = ChatPromptTemplate.fromTemplate(
+  "你是{role}。请用{style}的语言，向{audience}解释{topic}。"
+);
+
+const messages = await prompt.invoke({
+  role: "耐心的编程老师",
+  style: "通俗",
+  audience: "运营同事",
+  topic: "什么是 API",
+});
+console.log(messages);
+// 输出一条 user 消息，content 是四个变量都填好后的完整文本
+```
+
+### ChatPromptTemplate：多消息场景的正解
+
+对话场景下，Prompt 往往不止一条消息。用 `fromMessages` 声明整个消息序列：
+
+```ts
+const chatPrompt = ChatPromptTemplate.fromMessages([
+  ["system", "你是{role}。只输出用户要求的内容，不闲聊。"],
+  ["human", "{question}"],
+]);
+```
+
+`["system", "..."]` 是简写，等价于 `new SystemMessage(...)`。调用 `invoke` 传入变量后，得到的是可以直接喂给模型的消息数组。注意到没有：**模板的输出，恰好是模型的输入类型**。这不是巧合，是设计好的，马上就会用到。
+
+### 模板复用：partial 变量
+
+同一段角色设定要在多条链里用，可以预先填充一部分变量：
+
+```ts
+const basePrompt = ChatPromptTemplate.fromMessages([
+  ["system", "你是{role}。回答控制在{maxWords}字以内。"],
+  ["human", "{question}"],
+]);
+
+// partial 先把"通用设定"钉死，剩下的变量留给具体场景
+const teacherPrompt = await basePrompt.partial({
+  role: "耐心的编程老师",
+  maxWords: "150",
+});
+```
+
+这样「团队统一的 system 设定」就成了一处定义、处处引用的资产，改文案不用翻代码。
+
+## 第三件套：OutputParser，给输出上规矩
+
+模型返回的是文本，程序要的是数据。OutputParser 负责这个转换。
+
+最朴素的是 `StringOutputParser`：把 `AIMessage` 剥成纯字符串。别小看它，有了它，链的下游就不用关心消息对象的内部结构。
+
+真正解决问题的是结构化输出。第 1 章我们靠「求模型返回 JSON + 手动清洗」硬解析，脆弱得很。v1 的正解是 `withStructuredOutput`：用 zod schema 声明你要的结构，框架负责约束模型输出并解析成对象。
+
+先认识一下 zod：它是 TypeScript 的 schema 校验库，用代码声明「一个对象该有哪些字段、各是什么类型」，然后可以校验任意数据是否符合声明。LangChain 用它描述工具参数和结构化输出的形状。
+
+```ts
+import { z } from "zod";
+
+// 声明结构：一个"知识点讲解"对象
+const ExplanationSchema = z.object({
+  summary: z.string().describe("一句话总结"),
+  keyPoints: z.array(z.string()).describe("3 个以内的要点"),
+  difficulty: z.enum(["入门", "进阶", "高级"]).describe("难度评级"),
+});
+
+const structuredModel = model.withStructuredOutput(ExplanationSchema);
+const result = await structuredModel.invoke("解释什么是闭包");
+
+console.log(result.summary);     // 直接拿到对象属性，类型安全
+console.log(result.keyPoints);   // string[]
+```
+
+两个细节值得注意。一是 `describe` 里写的字段说明会参与模型对结构的理解，写清楚点，输出质量会更好。二是解析失败时框架会报错而不是悄悄降级，这让问题暴露在开发期，而不是上线后。`withStructuredOutput` 底层用的是各家模型的原生结构化能力（工具调用或 JSON schema 模式），所以可靠性远高于「Prompt 里求它」。
+
+## Runnable：把三件套统一起来的协议
+
+现在到本章最关键的概念。上面的模板、模型、解析器，看似是三样东西，其实它们都实现了同一个接口：**Runnable**。
+
+Runnable 规定了一组标准调用方法：
+
+- `invoke(input)`：输入一个值，输出一个值；
+- `batch(inputs)`：一批输入并行处理；
+- `stream(input)`：流式产出中间结果。
+
+这个设计的威力在于：**既然接口一样，部件就可以任意串联，串联出来的整体依然是 Runnable**。模板接模型，模型接解析器，接好的整条链还可以继续往外接。这就是「水管」心智模型的来历。
+
+## LCEL：用 pipe 把水管接起来
+
+LCEL（LangChain Expression Language）是组合 Runnable 的语法。Python 版用 `|` 运算符，JS 版没有运算符重载，用的是 `.pipe()` 方法，含义相同：左边的输出，喂给右边的输入。
+
+```ts
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { StringOutputParser } from "@langchain/core/output_parsers";
+
+const chain = ChatPromptTemplate
+  .fromTemplate("用一句话向{audience}解释{topic}")
+  .pipe(model)                    // 模板的输出（消息数组）→ 模型
+  .pipe(new StringOutputParser()); // 模型的输出（AIMessage）→ 纯文本
+
+const answer = await chain.invoke({ audience: "产品经理", topic: "向量数据库" });
+console.log(answer); // 直接是字符串
+```
+
+读法就是从左到右的水流：变量进模板，消息进模型，回答进解析器，字符串出来。`chain` 本身还是 Runnable，所以可以继续 `chain.pipe(...)`，也可以作为更大链的一个部件。
+
+### 链的中间步骤也能取到
+
+调试时经常需要看中间产物，比如「模型原始返回了什么」。用 `RunnablePassthrough.assign` 或者在开发期拆开调用都行，最简单的办法是先只 pipe 前两段看一眼：
+
+```ts
+const debugChain = prompt.pipe(model);
+const raw = await debugChain.invoke({ audience: "产品经理", topic: "向量数据库" });
+console.log(raw.content, raw.usage_metadata);
+```
+
+### 一份输入，多处使用：RunnableParallel
+
+直线管道有个限制：一个值流过某个环节后，下游就只看到处理结果，看不到原值了。实际开发里经常想「既要处理结果，也要保留原始输入」。比如翻译场景，前端既要译文也要原文对照。`RunnableParallel` 让一份输入同时流进多个分支，结果按分支名收成对象：
+
+```ts
+import { RunnableParallel, RunnablePassthrough } from "@langchain/core/runnables";
+
+const parallel = RunnableParallel.from({
+  original: new RunnablePassthrough(),  // 原样放行输入
+  translated: ChatPromptTemplate
+    .fromTemplate("把这句话翻译成英文：{text}")
+    .pipe(model)
+    .pipe(new StringOutputParser()),
+});
+
+const out = await parallel.invoke({ text: "亡羊补牢，未为迟也。" });
+console.log(out.original);    // { text: "亡羊补牢，未为迟也。" }
+console.log(out.translated);  // "It is never too late to mend."
+```
+
+`RunnablePassthrough` 是个什么都不会做的 Runnable，输入什么输出什么，专职在并行结构里保留原始值。这个「并行 + 直通」的组合在第 3 章的 RAG 链里会再次出现：到时候一条分支取检索结果，一条分支保留用户问题，最后汇合进模板。
+
+## Prompt 调试的实证方法
+
+模板这东西，写出来只是开始，调好才是功夫。给你一套可操作的调试流程，比「凭感觉改文案」靠谱：
+
+1. **基线**：固定一个输入，跑一次，记录输出和 `usage_metadata`。
+2. **单变量改动**：每次只改一处（一句指令、一个约束、一个示例），重跑对比。一次改多处，就说不清是哪处在起作用。
+3. **看 token 消耗**：Prompt 每加一段话，input_tokens 都在涨。指令带来的质量提升值不值这些 token，要算账。
+4. **边界输入回归**：至少留三个输入常备——一个常规的、一个刁钻的、一个超短或超长的。每次改 Prompt 全跑一遍。
+
+配合 `RunnableLambda` 打印最终消息（见下文练习），你能精确看到模型实际收到的每一个字。很多「模型不听话」的问题，看一眼实际发出的内容就水落石出了——多半是模板变量没填上，或者 system 消息被意外覆盖。
+
+## 批量与流式：同一个链，三种跑法
+
+Runnable 接口的统一方法，在整条链上都可以用。
+
+**批量 `batch`**：一组输入并行执行，适合离线处理：
+
+```ts
+const answers = await chain.batch([
+  { audience: "产品经理", topic: "向量数据库" },
+  { audience: "实习生", topic: "闭包" },
+  { audience: "设计师", topic: "REST API" },
+]);
+console.log(answers.length); // 3
+```
+
+**流式 `stream`**：结果一段一段产出，适合做打字机效果的前端：
+
+```ts
+for await (const chunk of await chain.stream({ audience: "产品经理", topic: "向量数据库" })) {
+  process.stdout.write(chunk); // 逐段输出，不一次性等完
+}
+```
+
+两个细节。一是 `stream()` 本身也返回 Promise，`await` 拿到的是一个「异步迭代器」——可以把它理解成一个会陆续到货的包裹队列，`for await` 就是每到一个包裹拆一个。二是流式出来的每一段是字符串（因为链的末端是 StringOutputParser）。如果链末端是模型，每段就是 `AIMessageChunk`。流式不改变链的结构，只改变你消费结果的方式——第 9 章还会深入三种流式粒度。
+
+### 异步是怎么回事
+
+你可能注意到所有调用都要 `await`。模型调用是网络请求，Node.js 里网络操作是异步的：发出请求后线程不傻等，结果回来再继续。`async/await` 是 TypeScript 处理异步的标准写法，`await` 的意思是「等这个 Promise 出结果，把结果给我」。本课程的示例文件大多在顶层直接用 `await`（`.ts` 文件配合 tsx 支持顶层 await），所以你看到的代码没有包一层函数。
+
+## 动手：把第 1 章的裸调代码重构成链
+
+练习来了。第 1 章的助手有三个诉求：固定角色设定、JSON 输出、可换模型。用本章的三件套重写：
+
+```ts
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { z } from "zod";
+
+// 换模型？只改这一个构造
+const model = new ChatOpenAI({
+  model: "deepseek-v4-flash",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  configuration: { baseURL: "https://api.deepseek.com" },
+  temperature: 0, // JSON 输出场景调低随机性
+});
+
+const prompt = ChatPromptTemplate.fromMessages([
+  ["system", "你是耐心的编程老师。回答控制在 200 字以内。"],
+  ["human", "{question}"],
+]);
+
+const AnswerSchema = z.object({
+  summary: z.string(),
+  keyPoints: z.array(z.string()),
+});
+
+const chain = prompt.pipe(model.withStructuredOutput(AnswerSchema));
+
+const result = await chain.invoke({ question: "什么是闭包？" });
+console.log(result.summary, result.keyPoints);
+```
+
+对照第 1 章的裸调版本：角色设定从手拼字符串变成模板；JSON 从「求 + 洗 + try-catch」变成 schema 约束；换模型从 if-else 适配层变成改一行构造。胶水代码消失了，剩下的每一行都在说业务。
+
+再进一步，做两个改造练习：
+
+1. **换部件**：把 `StringOutputParser` 版本的链改成输出结构化数据，观察链的类型怎么变。判据：改造后 `chain.invoke(...)` 的返回值从字符串变成对象，且能直接取属性。
+2. **加环节**：在模板和模型之间插入一个 `RunnableLambda`（可以把任意函数变成 Runnable），打印出最终发给模型的完整消息——这是调试 Prompt 的常用手段。判据：每次 `invoke` 前，控制台先打印出变量已填充完毕的消息数组。
+
+```ts
+import { RunnableLambda } from "@langchain/core/runnables";
+
+const peek = new RunnableLambda({
+  func: (messages) => {
+    console.log("发给模型的消息：", messages); // 看一眼，原样放行
+    return messages;
+  },
+});
+
+const debugChain = prompt.pipe(peek).pipe(model).pipe(new StringOutputParser());
+```
+
+## 常见误区
+
+**误区一：Prompt 越长越详细，效果越好。** 不一定。冗长 Prompt 稀释关键指令，还烧 token。先写清楚，再写详细；能进模板的进模板，能进结构的进结构。
+
+**误区二：结构化输出就是用 Prompt 让模型返回 JSON。** 上面说过，Prompt 约束是「求」，schema 约束是「管」。前者模型可以不听，后者有框架兜底。
+
+**误区三：链只能直线串。** 本章展示了直线和并行，Runnable 家族还有分支（`RunnableBranch`）等组合子。但直线加这些组合子仍然表达不了「模型自己决定下一步」，那是第 4 章 Agent 和模块二 LangGraph 的地盘。
+
+## 小结
+
+本章建立了全课最重要的心智模型：模板、模型、解析器都是 Runnable，接口统一，`pipe` 串联，串出来的链还是 Runnable。三件套各管一段——模板管输入拼装，模型管生成，解析器管输出规矩；`invoke`、`batch`、`stream` 三种跑法通用于任何 Runnable。最后用三件套重写了第 1 章的裸调代码，亲眼看到胶水代码消失。
+
+下一章给模型补上它不知道的知识：RAG。你会看到检索器也是 Runnable，可以直接接进今天这条链。
+
+## 自测
+
+1. `invoke` 的返回值是字符串吗？如果不是，它是什么，怎么取出文本和 token 用量？
+2. `withStructuredOutput` 和在 Prompt 里写「请返回 JSON」有什么本质区别？
+3. 「`chain` 用 `.pipe()` 串好之后还能继续 `.pipe()`」这句话成立的前提是什么？
+4. `batch` 和多次 `invoke` 循环有什么区别？什么场景该用 `batch`？
+
+参考答案：1. 不是；是 `AIMessage`，用 `.content` 取文本、`.usage_metadata` 取用量。2. 前者用 schema 由框架约束并解析，失败会报错；后者只是请求，模型可以不遵守。3. 每个部件都实现了 Runnable 接口，pipe 的产物仍是 Runnable。4. `batch` 并行执行一组输入，吞吐高、代码简洁；离线批量处理、评测等场景该用它，需要逐条等待结果再决定下一步的交互场景不适合。

@@ -1,0 +1,21 @@
+# 本地部署密钥/配置（含密码，勿提交）
+deploy.env
+
+# 构建产物（本地 build.py / 部署生成，勿提交）
+dist/
+
+# 依赖与练习工作区（体积巨大）
+**/node_modules/
+courses/**/workspace/
+
+# 课程质检副产物（截图等，不给访客看）
+courses/**/quality/
+courses/**/.teach-yourself*
+
+# 系统/缓存
+.DS_Store
+*.pyc
+__pycache__/
+*.log
+.env
+.env.*

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目导览：需求、架构与工程初始化 · LangChain + LangGraph 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">LangChain + LangGraph 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">从这一章开始，玩法变了</a></li><li><a href="#h-3">需求：Ticket Polit 是个什么产品</a></li><li><a href="#h-5">从需求到图：AI 内核的设计</a></li><li><a href="#h-6">架构总览：两个数据库是重点</a></li><li><a href="#h-7">技术选型：每个选择的理由</a></li><li><a href="#h-8">工程初始化：仓库结构与骨架</a></li><li><a href="#h-9">里程碑 0：前后端首次联通</a></li><li><a href="#h-11">本模块的开发纪律</a></li><li><a href="#h-12">小结</a></li><li><a href="#h-13">自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 11 章 项目导览：需求、架构与工程初始化</h1>
+<blockquote><p>一句话总结：读懂 Ticket Polit 的需求与技术方案，理解「两个数据库、三层结构」的架构决策，搭好前后端骨架并完成首次联通。</p></blockquote>
+<h2 id="h-2">从这一章开始，玩法变了</h2>
+<p>前十章是一个概念一个概念地学，每章的代码只服务当章的理解。从本章起，我们换一个推进方式：<strong>围绕一个真实产品的功能切片，把学过的所有东西组装起来。</strong> 概念不再是主角，「用户要用这个功能，怎么实现」才是。</p>
+<p>这意味着两件事。一是代码量上来了，单章会出现多个文件、跨前后端的完整链路——别慌，每一段我们都会讲清它在系统里的位置。二是你会遇到前十章没细讲的工程话题：Express 中间件、SQLite、SSE 协议、Vue 组件、构建部署。默认你懂基础语法，但这些「架构层面的复杂内容」我们会展开讲。</p>
+<h2 id="h-3">需求：Ticket Polit 是个什么产品</h2>
+<p>Ticket Polit（工单副驾驶）是一个企业内部服务台系统。故事是这样的：公司里的员工遇到问题——报销不会填、VPN 连不上、要申请退款——传统做法是提一个工单，等服务台同事逐条处理。服务台就两个人，工单永远积压，员工永远在催。</p>
+<p>Ticket Polit 的思路是 <strong>AI 先接一道</strong>：工单进来，AI 工作流先判断类型，能直接答的立刻答，要审批的走审批流，真需要人的才转人工。系统里有两个角色：</p>
+<ul><li><strong>员工</strong>：提交工单、查看自己的工单、在工单下追问；</li><li><strong>审批员</strong>：在审批中心处理高风险操作的批准/拒绝（本项目里就是退款）。</li></ul>
+<p>核心流程三条路，这就是整个产品的灵魂：</p>
+<ol><li><strong>咨询类</strong>（「报销额度是多少」「VPN 怎么连」）：AI 检索知识库，直接生成回复，工单办结；</li><li><strong>退款类</strong>：AI 整理出处理方案，但<strong>必须人工审批</strong>，批准前绝不执行，批准后执行并告知结果；</li><li><strong>其他类</strong>（报修、投诉等）：AI 登记分类，转人工队列，告知员工预计响应时间。</li></ol>
+<p>注意这三条路对应了你前十章学过的三种能力：RAG（第 3 章）、interrupt 人工审批（第 9 章）、确定性条件分支（第 7 章）。这不是巧合——<strong>真实产品的功能切片，就是框架能力的排列组合</strong>。</p>
+<h3 id="h-4">明确不做什么</h3>
+<p>好项目和烂项目的区别往往不在做了什么，而在敢不做什么。本项目砍掉：用户注册与 SSO（用预置 token 模拟登录）、权限矩阵（硬编码两个角色）、附件与富文本、通知推送、知识库管理后台（知识库就是三份本地 Markdown）。每一刀都是为了让五章的篇幅聚焦在 AI 全栈的主干上。真实项目里这些都该做，但那是另一个五章的事。</p>
+<h2 id="h-5">从需求到图：AI 内核的设计</h2>
+<p>第 5 章教过「把业务流程翻译成节点和边」，现在对真实需求做一遍：</p>
+<div class="mermaid">flowchart LR
+  S([&quot;工单提交/追问&quot;]) --&gt; C[&quot;classify 分类&quot;]
+  C --&gt;|consult 咨询| R[&quot;consult 检索知识库并回复&quot;] --&gt; E([&quot;办结&quot;])
+  C --&gt;|refund 退款| A[&quot;refundFlow 整理方案并等待审批&quot;]
+  A --&gt;|批准| X[&quot;执行退款并回复&quot;] --&gt; E
+  A --&gt;|拒绝| N[&quot;告知未通过&quot;] --&gt; E
+  C --&gt;|other 其他| H[&quot;handoff 转人工&quot;] --&gt; E</div>
+<p>对照需求逐条翻译：「AI 先判断类型」是 classify 节点加条件边；三条路径各是一个节点；「必须人工审批」是 refundFlow 里的 interrupt；「员工可以追问」意味着整个图要能多轮运行——第 8 章的 Checkpointer，thread_id 就是工单 ID。</p>
+<p>State 设计沿用第 10 章的混合形态（业务字段 + 消息轨迹），到第 13 章你会看到它的完整定义。现在先记住原则：分类结果、工单 ID 这类流程数据进业务字段，对话历史进 messages。</p>
+<h2 id="h-6">架构总览：两个数据库是重点</h2>
+<p>整个系统三层：Vue 前端、Express 后端、LangGraph AI 内核（跑在后端进程里）。数据却有两处存放，这是新手最容易糊涂的地方：</p>
+<div class="mermaid">flowchart TB
+  subgraph FE[&quot;Vue 前端（浏览器）&quot;]
+    UI[&quot;提交页 / 列表页 / 详情页 / 审批中心&quot;]
+  end
+  subgraph BE[&quot;Express 后端（Node 进程）&quot;]
+    API[&quot;REST API 层&quot;]
+    AG[&quot;LangGraph 工作流&quot;]
+  end
+  DB1[(&quot;业务库 tickets.sqlite&lt;br/&gt;better-sqlite3&quot;)]
+  DB2[(&quot;流程状态 checkpoints.sqlite&lt;br/&gt;SqliteSaver&quot;)]
+  KB[/&quot;知识库 knowledge/*.md&quot;/]
+  UI --&gt;|&quot;HTTP / SSE&quot;| API
+  API --&gt; AG
+  API --&gt; DB1
+  AG --&gt; DB2
+  AG --&gt; KB</div>
+<p><strong>业务库</strong>存业务事实：工单标题、描述、分类、状态、提交人。它的读者是人和业务代码——列表页展示、状态筛选、以后做报表统计都靠它。<strong>流程状态库</strong>（checkpointer）存 Agent 执行状态：每个工单的处理流程走到哪一步、中间 State 是什么、断点在哪。它的读者只有 LangGraph 框架。</p>
+<p>为什么要分两处？因为它们的生命周期和访问模式完全不同。业务数据要长期保存、要被各种查询；流程状态跟着 Agent 走、结构由框架定、人基本不直接读。第 8 章的误区一说的就是这事：Checkpointer 不是业务数据库。混在一起放，业务查询会被框架的存储结构绑架，框架升级时业务数据还受牵连。</p>
+<p>知识库是三份 Markdown 文件（报销制度、IT 指南、请假制度），服务启动时建成内存向量索引（第 3 章的 MemoryVectorStore）。数据量小，没必要上独立向量库——这是选型，不是偷懒。</p>
+<h2 id="h-7">技术选型：每个选择的理由</h2>
+<table><thead><tr><th>选择</th><th>理由</th><th>放弃了什么</th></tr></thead><tbody><tr><td>Express 5</td><td>Node 最主流的 Web 框架，中间件模型直白，教学零障碍</td><td>NestJS（太重）、Hono（生态年轻）</td></tr><tr><td>better-sqlite3</td><td>嵌入式、零部署、同步 API 对教学友好，单机产品完全够用</td><td>Postgres（要起服务，分散焦点）</td></tr><tr><td>Vue 3 + Vite</td><td>上手曲线平缓，script setup 写法和 TS 配合好</td><td>React（等价选择，口味问题）</td></tr><tr><td>SSE 流式</td><td>单向推送（后端→前端）场景的最简方案，HTTP 原生</td><td>WebSocket（双向，杀鸡用牛刀）</td></tr><tr><td>不引 Pinia</td><td>本项目共享状态就两个数组，reactive 模块足够</td><td>组件库同理，聚焦 AI 交互</td></tr></tbody></table>
+<p>SSE 和 WebSocket 这一条值得展开半句：我们的流式需求是「后端把 Agent 过程推给前端」，纯单向。SSE 就是 HTTP 响应不关门、持续写数据，浏览器原生支持、自动重连、实现十行以内。WebSocket 解决的是双向实时（聊天室、协同编辑），用它得处理连接管理、心跳、协议设计——为了单向推送背这些，不值。<strong>选型不是选最强的，是选刚好够的。</strong></p>
+<h2 id="h-8">工程初始化：仓库结构与骨架</h2>
+<p>开工。结构是前后端同仓（monorepo 的极简形态）：</p>
+<pre class="code"><code class="lang-text">ticket-polit/
+├── server/          # 后端：Express + LangGraph
+│   ├── src/
+│   │   ├── index.ts        # 入口：起 HTTP 服务
+│   │   ├── db.ts           # 业务库连接与建表
+│   │   ├── routes/         # API 路由
+│   │   └── agent/          # AI 内核：图、节点、工具
+│   ├── knowledge/          # 知识库 Markdown
+│   └── package.json
+└── web/             # 前端：Vue 3 + Vite
+    ├── src/
+    │   ├── api.ts          # HTTP/SSE 客户端
+    │   ├── views/          # 页面组件
+    │   └── router.ts
+    └── package.json</code></pre>
+<p>两个包独立装依赖、独立启动，开发时通过 Vite 的代理打通。先建后端：</p>
+<pre class="code"><code class="lang-bash">mkdir -p ticket-polit/server/src/{routes,agent} ticket-polit/server/knowledge
+cd ticket-polit/server
+npm init -y
+npm install express better-sqlite3 langchain @langchain/core @langchain/langgraph @langchain/langgraph-checkpoint-sqlite @langchain/openai @langchain/textsplitters @langchain/classic zod
+npm install --save-dev tsx typescript @types/express @types/better-sqlite3 @types/node</code></pre>
+<p>依赖大部分前十章都见过，新面孔两个：<code>express</code> 是 Web 框架，<code>better-sqlite3</code> 是 SQLite 的 Node 驱动（同步 API，不用 await，教学友好）。</p>
+<p><code>.env</code> 照第 1 章的老规矩放在 server 下（DeepSeek 密钥必备，OpenAI 密钥用于 Embedding）。</p>
+<p>知识库的三份文件现在就建好，第 13 章直接拿来建索引。<code>server/knowledge/报销制度.md</code>：</p>
+<pre class="code"><code class="lang-text"># 费用报销制度（节选）
+
+单笔金额 500 元以下（含）由直属主管审批；500 元至 5000 元（含）由部门负责人审批；
+超过 5000 元需分管总监审批并附费用说明。
+报销应在费用发生后 30 天内提交，发票抬头必须为公司全称。
+差旅住宿标准：一线城市每晚不超过 500 元，其他城市每晚不超过 350 元。
+审批通过后，报销款于次月 10 日前随工资发放。</code></pre>
+<p><code>server/knowledge/it指南.md</code>：</p>
+<pre class="code"><code class="lang-text"># IT 常见问题指南
+
+VPN 连不上：先完全退出客户端再重启；仍不行的，检查系统时间是否准确（误差超过 5 分钟会导致证书校验失败）；最后联系 IT 值班。
+办公网慢：优先使用有线连接；无线网络选择带 &quot;-5G&quot; 后缀的热点。
+电脑报修：提交工单并注明资产编号（机身贴纸上 IT- 开头的编号），IT 会在 1 个工作日内响应。</code></pre>
+<p><code>server/knowledge/请假制度.md</code>：</p>
+<pre class="code"><code class="lang-text"># 请假制度（节选）
+
+年假：入职满 1 年 5 天，之后每满 1 年增加 1 天，上限 15 天。
+事假：3 天以内直属主管审批，超过 3 天需部门负责人审批。
+病假：需提供医院证明，3 天以内直属主管审批。
+所有请假须在 OA 系统提前提交，突发情况可事后 24 小时内补办。</code></pre>
+<p>内容都是教学虚构，够 RAG 检索用就行——重要的是每份文件有具体数字和规则，问「住宿额度」「VPN」「年假几天」都能命中。</p>
+<h2 id="h-9">里程碑 0：前后端首次联通</h2>
+<p>骨架阶段的目标只有一个：<strong>浏览器里的页面能调到后端的接口</strong>。先写最小的后端 <code>src/index.ts</code>：</p>
+<pre class="code"><code class="lang-ts">import express from &quot;express&quot;;
+
+const app = express();
+app.use(express.json());
+
+app.get(&quot;/api/health&quot;, (_req, res) =&gt; {
+  res.json({ ok: true, service: &quot;ticket-polit&quot;, time: new Date().toISOString() });
+});
+
+app.listen(3000, () =&gt; console.log(&quot;server on http://localhost:3000&quot;));</code></pre>
+<p><code>express()</code> 创建应用，<code>app.get</code> 注册「GET /api/health 这个路由由这个函数处理」，<code>res.json</code> 返回 JSON。启动：</p>
+<pre class="code"><code class="lang-bash">npx tsx --env-file=.env src/index.ts
+# curl http://localhost:3000/api/health 应返回 {&quot;ok&quot;:true,...}</code></pre>
+<p>前端用 Vite 脚手架（在 ticket-polit 目录下）：</p>
+<pre class="code"><code class="lang-bash">npm create vite@latest web -- --template vue-ts
+cd web &amp;&amp; npm install &amp;&amp; npm install vue-router@4</code></pre>
+<h3 id="h-10">跨域与代理：开发期的必修课</h3>
+<p>前端跑在 <code>localhost:5173</code>（Vite 默认），后端在 <code>localhost:3000</code>。浏览器有<strong>同源策略</strong>：页面来自 5173，却去请求 3000，默认会被拦（这就是 CORS 问题）。解决办法有两派：后端发 CORS 头放行，或前端开发服务器做代理。开发期用代理更干净——在 <code>web/vite.config.ts</code> 里加：</p>
+<pre class="code"><code class="lang-ts">import { defineConfig } from &quot;vite&quot;;
+import vue from &quot;@vitejs/plugin-vue&quot;;
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    proxy: {
+      &quot;/api&quot;: &quot;http://localhost:3000&quot;,   // 前端代码里请求 /api/*，Vite 替你转给 3000
+    },
+  },
+});</code></pre>
+<p>配了这个，前端代码里永远写 <code>/api/health</code> 这样的相对路径，不用关心后端在哪；浏览器的请求都发给 5173，同源策略不触发，Vite 在服务器侧转发（服务器之间没有同源限制）。生产环境的对应方案是「前后端同域部署」，第 15 章落地。</p>
+<p>把 <code>web/src/App.vue</code> 改成最简单的验证页：</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+import { onMounted, ref } from &quot;vue&quot;;
+const health = ref(&quot;请求中…&quot;);
+onMounted(async () =&gt; {
+  const r = await fetch(&quot;/api/health&quot;);
+  const j = await r.json();
+  health.value = `后端在线：${j.service} @ ${j.time}`;
+});
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;h1&gt;Ticket Polit&lt;/h1&gt;
+  &lt;p&gt;{{ health }}&lt;/p&gt;
+&lt;/template&gt;</code></pre>
+<p><code>&lt;script setup&gt;</code> 是 Vue 3 的组合式写法：里面的顶层变量、函数直接能在模板里用；<code>ref</code> 创建响应式数据——值一变，用到它的模板自动更新；<code>onMounted</code> 是组件挂载后执行的生命周期钩子。这三个概念撑起了本项目的全部前端。</p>
+<p><code>npm run dev</code> 起前端，浏览器打开 http://localhost:5173，看到「后端在线：ticket-polit @ …」，<strong>里程碑 0 达成</strong>。</p>
+<h2 id="h-11">本模块的开发纪律</h2>
+<p>五章五个里程碑，每章结束都有可验证的验收动作（M0 就是刚才那个「看到后端在线」）。跟练的建议：</p>
+<ul><li><strong>按章验收，不跳步</strong>。后面每一章都建立在前一章的代码上，跳一章后面全是隐形坑。</li><li><strong>代码先手敲再对照</strong>。项目代码比前十章长，复制粘贴能跑，但你的肌肉记忆是零。</li><li><strong>报错了先看在哪家</strong>。前端报错在浏览器控制台（F12），后端报错在终端，SSE 问题看 Network 面板的 EventStream——第 15 章有专门的排错清单，但定位习惯从现在开始养。</li></ul>
+<h2 id="h-12">小结</h2>
+<p>本章完成了从「学概念」到「做产品」的切换：读懂 Ticket Polit 的三条 AI 路径需求，把它翻译成 LangGraph 的图设计；建立了「前端 / 后端 / AI 内核」三层加「业务库 / 流程状态库」两个数据库的架构认知；说清了每个技术选型的理由；搭好骨架并通过 Vite 代理完成前后端首次联通。</p>
+<p>下一章写后端地基：业务库建表、工单 CRUD API、鉴权与输入校验。AI 内核要到第 13 章登场——先把「不用 AI 也能转」的骨架做扎实，这是真实项目的正确顺序。</p>
+<h2 id="h-13">自测</h2>
+<ol><li>业务库和流程状态库存的分别是什么？为什么不合并？</li><li>「退款必须人工审批」这个需求，在图设计上对应什么机制？在数据上对应什么字段？</li><li>开发期为什么用 Vite 代理而不是让后端发 CORS 头？生产环境对应的方案是什么？</li><li>SSE 和 WebSocket 的适用差异是什么？本项目为什么选 SSE？</li></ol>
+<p>参考答案：1. 业务库存业务事实（工单内容、状态），流程状态库存 Agent 执行快照；两者生命周期与访问模式不同，合并会让业务查询被框架存储结构绑架。2. 对应 refundFlow 节点内的 interrupt；数据上对应工单的 status（pending_approval）与审批结果字段。3. 代理让前端只用相对路径、不触发同源策略，且部署拓扑变化时前端代码不动；生产用前后端同域部署。4. SSE 是 HTTP 单向推送，适合后端到前端的流式；WebSocket 是双向长连，适合聊天协同。本项目只需把 Agent 过程推给前端，SSE 最简。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="10-multi-agent-production.html">← 第 10 章</a></span>
+    <span><a href="12-backend-foundation.html">第 12 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</body>
+</html>

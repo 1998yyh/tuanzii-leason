@@ -1,0 +1,12 @@
+[
+  {
+    "slug": "langchain-langgraph",
+    "title": "LangChain + LangGraph 从入门到实战进阶",
+    "subtitle": "从诞生背景到原理进阶，再到 Ticket Polit 全栈项目实战",
+    "description": "面向 0 基础或有一定编程经验的 AI 全栈开发学习者，讲清 LangChain 与 LangGraph 的定位、异同与实战用法，并通过完整的 Ticket Polit 项目交付可运行成果。",
+    "moduleCount": 3,
+    "lessonCount": 15,
+    "path": "courses/langchain-langgraph/index.html",
+    "status": "manual-review"
+  }
+]

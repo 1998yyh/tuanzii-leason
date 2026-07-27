@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>前端实现：页面、状态与 AI 交互体验 · LangChain + LangGraph 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">LangChain + LangGraph 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">本章任务：给用户一张脸</a></li><li><a href="#h-3">项目结构与两个基础件</a></li><li><a href="#h-5">api.ts：token 管理与 SSE 手动解析</a></li><li><a href="#h-7">提交页：表单与错误呈现</a></li><li><a href="#h-8">列表页：onMounted 与状态徽章</a></li><li><a href="#h-9">详情页：把 Agent 过程变成用户体验</a></li><li><a href="#h-10">审批中心：最小实现</a></li><li><a href="#h-11">样式：够用就行的手写 CSS</a></li><li><a href="#h-12">验收：M3 全角色走查</a></li><li><a href="#h-13">常见坑位</a></li><li><a href="#h-14">小结</a></li><li><a href="#h-15">自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 14 章 前端实现：页面、状态与 AI 交互体验</h1>
+<blockquote><p>一句话总结：用 Vue 3 实现提交、列表、详情、审批四个界面，手写 fetch 版 SSE 客户端，把 Agent 的执行过程渲染成用户看得懂的体验。</p></blockquote>
+<h2 id="h-2">本章任务：给用户一张脸</h2>
+<p>后端再强，员工不会用 curl 提工单。本章交付里程碑 M3：浏览器里完成全部角色操作——员工提交工单、看列表、进详情追问（看着 Agent 一步步处理）、审批员在审批中心点批准。前端技术栈：Vue 3 + Vite + vue-router，手写 CSS，不引组件库和 Pinia——焦点全部留给 AI 交互逻辑。</p>
+<h2 id="h-3">项目结构与两个基础件</h2>
+<p><code>web/src</code> 下的最终结构：</p>
+<pre class="code"><code class="lang-text">src/
+├── main.ts            # 入口：挂路由
+├── App.vue            # 布局：导航 + RouterView
+├── router.ts          # 三个路由
+├── api.ts             # HTTP 客户端 + SSE 解析（本章核心）
+├── store.ts           # 类型与轻量共享状态
+└── views/
+    ├── SubmitView.vue  # 提交工单
+    ├── ListView.vue    # 我的工单
+    └── DetailView.vue  # 详情 + 对话 + 审批</code></pre>
+<p>先写两个基础件。<code>router.ts</code>：</p>
+<pre class="code"><code class="lang-ts">import { createRouter, createWebHistory } from &quot;vue-router&quot;;
+import SubmitView from &quot;./views/SubmitView.vue&quot;;
+import ListView from &quot;./views/ListView.vue&quot;;
+import DetailView from &quot;./views/DetailView.vue&quot;;
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: &quot;/&quot;, redirect: &quot;/submit&quot; },
+    { path: &quot;/submit&quot;, component: SubmitView },
+    { path: &quot;/tickets&quot;, component: ListView },
+    { path: &quot;/tickets/:id&quot;, component: DetailView },   // :id 是路径参数
+  ],
+});</code></pre>
+<p><code>main.ts</code>：<code>createApp(App).use(router).mount(&quot;#app&quot;)</code>。<code>App.vue</code> 放导航和两个 <code>RouterLink</code>，页面区放 <code>&lt;RouterView /&gt;</code>——路由切到哪，对应的组件就渲染在哪。</p>
+<h3 id="h-4">store.ts 与角色切换</h3>
+<p>视图引用的类型和共享状态集中在 <code>store.ts</code>：</p>
+<pre class="code"><code class="lang-ts">// web/src/store.ts
+import { reactive } from &quot;vue&quot;;
+
+export interface Ticket {
+  id: number;
+  title: string;
+  description: string;
+  category: string | null;
+  status: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ChatMessage {
+  role: &quot;user&quot; | &quot;assistant&quot;;
+  content: string;
+}
+
+// 轻量共享状态：module 级 reactive，任何组件 import 后读写同一份
+export const store = reactive({
+  role: &quot;employee&quot; as &quot;employee&quot; | &quot;admin&quot;,
+  pendingCount: 0,
+});</code></pre>
+<p><code>reactive</code> 和 <code>ref</code> 是表兄弟：ref 包单个值，reactive 包对象。模块顶层的 reactive 对象被多个组件 import 时，大家拿到的是同一份——这就是不要 Pinia 的底气：本项目跨页面共享的就「当前角色」和「待审批数」两样东西。</p>
+<p>角色切换用它们串起来。教学项目没有登录页，在导航栏放两个按钮换 token（<code>App.vue</code> 的 script 部分）：</p>
+<pre class="code"><code class="lang-ts">import { setToken } from &quot;./api&quot;;
+import { store } from &quot;./store&quot;;
+
+function switchRole(role: &quot;employee&quot; | &quot;admin&quot;) {
+  setToken(role === &quot;admin&quot; ? &quot;admin-token&quot; : &quot;emp-token&quot;);
+  store.role = role;
+  location.reload();   // 教学项目的偷懒招：整页刷新让所有数据按新角色重拉
+}</code></pre>
+<p>模板里两个按钮调它，再用 <code>store.role</code> 高亮当前角色。<code>location.reload()</code> 是砍需求的砍法——正规做法是各页面监听角色变化重新拉数据，但对本项目，刷新一次解决所有「旧角色数据残留」问题，简单且不会错。界面上把当前角色写清楚，学生跟练时才不会「我明明是管理员怎么 403」。</p>
+<h2 id="h-5">api.ts：token 管理与 SSE 手动解析</h2>
+<p>前端所有请求要带 <code>x-token</code>。教学项目用预置 token 存在 localStorage（第 1 章的密钥戒律针对的是模型 API key，这里的 token 是应用自身的登录态，两回事）：</p>
+<pre class="code"><code class="lang-ts">// web/src/api.ts
+const TOKEN_KEY = &quot;tp-token&quot;;
+
+export function setToken(t: string) { localStorage.setItem(TOKEN_KEY, t); }
+export function getToken() { return localStorage.getItem(TOKEN_KEY) ?? &quot;&quot;; }
+
+export async function api&lt;T&gt;(path: string, options: RequestInit = {}): Promise&lt;T&gt; {
+  const resp = await fetch(path, {
+    ...options,
+    headers: { &quot;Content-Type&quot;: &quot;application/json&quot;, &quot;x-token&quot;: getToken(), ...(options.headers ?? {}) },
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() =&gt; ({}));
+    throw new Error(body.error ?? `请求失败：${resp.status}`);
+  }
+  return resp.json();
+}</code></pre>
+<p><code>api&lt;T&gt;</code> 是个泛型封装：调用处声明期望的返回类型，统一处理 token 头与错误格式。角色切换（员工/审批员）就是换 token 的事，页面上放个简单的切换按钮调 <code>setToken</code> 即可。</p>
+<h3 id="h-6">SSE 解析：本章最硬的一段</h3>
+<p>第 13 章留的坑在这里填：追问是 POST，EventSource 用不了，只能 <code>fetch</code> 拿到响应体的字节流，自己按 SSE 协议解析。协议本身简单：事件之间空行分隔，数据行 <code>data: </code> 开头。麻烦在于<strong>字节流是随机切块到达的</strong>——一个事件可能被拆在两次网络包里，必须缓冲拼接：</p>
+<pre class="code"><code class="lang-ts">export async function streamSSE(
+  path: string,
+  body: unknown,
+  onEvent: (data: unknown) =&gt; void
+) {
+  const resp = await fetch(path, {
+    method: &quot;POST&quot;,
+    headers: { &quot;Content-Type&quot;: &quot;application/json&quot;, &quot;x-token&quot;: getToken() },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok || !resp.body) throw new Error(`流式请求失败：${resp.status}`);
+
+  const reader = resp.body.getReader();     // 拿到字节流的读取器
+  const decoder = new TextDecoder();
+  let buffer = &quot;&quot;;                          // 没收完的半截事件留在这里
+
+  while (true) {
+    const { done, value } = await reader.read();  // 读下一块（块边界是随机的！）
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const events = buffer.split(&quot;\n\n&quot;);    // 按事件边界切
+    buffer = events.pop() ?? &quot;&quot;;            // 最后一段可能不完整，留到下一轮
+    for (const evt of events) {
+      const line = evt.trim();
+      if (!line.startsWith(&quot;data: &quot;)) continue;
+      const payload = line.slice(6);        // 去掉 &quot;data: &quot; 前缀
+      if (payload === &quot;[DONE]&quot;) return;     // 收到后端约定的结束信号
+      onEvent(JSON.parse(payload));
+    }
+  }
+}</code></pre>
+<p>逐段读懂它：<code>resp.body.getReader()</code> 把「一次性的响应」变成「可以反复 read 的流」；<code>TextDecoder</code> 的 <code>{ stream: true }</code> 处理多字节字符跨块（中文正好容易撞上）；<code>buffer</code> 是解决「事件被拆包」的关键——每次只处理完整事件，半截的留给下次。这段代码是通用的，任何 POST 流式接口都能用它，值得收进你的工具箱。</p>
+<h2 id="h-7">提交页：表单与错误呈现</h2>
+<p><code>SubmitView.vue</code>，重点看 <code>&lt;script setup&gt;</code> 的写法：</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+import { ref } from &quot;vue&quot;;
+import { useRouter } from &quot;vue-router&quot;;
+import { api } from &quot;../api&quot;;
+
+const router = useRouter();
+const title = ref(&quot;&quot;);
+const description = ref(&quot;&quot;);
+const loading = ref(false);
+const error = ref(&quot;&quot;);
+
+async function submit() {
+  error.value = &quot;&quot;;
+  if (!title.value.trim() || !description.value.trim()) {
+    error.value = &quot;标题和描述都要填&quot;;
+    return;
+  }
+  loading.value = true;
+  try {
+    const r = await api&lt;{ id: number; status: string }&gt;(&quot;/api/tickets&quot;, {
+      method: &quot;POST&quot;,
+      body: JSON.stringify({ title: title.value, description: description.value }),
+    });
+    router.push(`/tickets/${r.id}`);      // 提交成功跳详情页
+  } catch (e) {
+    error.value = (e as Error).message;   // 后端的 400 消息直接呈现
+  } finally {
+    loading.value = false;                // finally 保证按钮一定恢复
+  }
+}
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;h1&gt;提交工单&lt;/h1&gt;
+  &lt;form @submit.prevent=&quot;submit&quot;&gt;
+    &lt;label&gt;标题 &lt;input v-model=&quot;title&quot; /&gt;&lt;/label&gt;
+    &lt;label&gt;描述 &lt;textarea v-model=&quot;description&quot; rows=&quot;5&quot;&gt;&lt;/textarea&gt;&lt;/label&gt;
+    &lt;p v-if=&quot;error&quot; class=&quot;error&quot;&gt;{{ error }}&lt;/p&gt;
+    &lt;button :disabled=&quot;loading&quot;&gt;{{ loading ? &quot;提交中…&quot; : &quot;提交&quot; }}&lt;/button&gt;
+  &lt;/form&gt;
+&lt;/template&gt;</code></pre>
+<p>Vue 的三个基本概念全在这了。<code>ref(&quot;&quot;)</code> 创建响应式变量，模板里 <code>v-model</code> 双向绑定输入框——用户打字，<code>title.value</code> 跟着变；代码改它，输入框跟着变。模板里的 <code>@submit.prevent</code> 是事件绑定（<code>.prevent</code> 阻止表单默认的整页刷新），<code>:disabled</code> 是属性绑定。<code>v-if</code> 控制元素存亡。</p>
+<p>两个细节是经验：提交前置空 error、用 finally 恢复 loading——异步操作的「进行中」状态，忘了恢复就是把按钮永久禁用的经典 bug；后端返回的 400 消息直接展示，校验文案前后端只用写一套。</p>
+<h2 id="h-8">列表页：onMounted 与状态徽章</h2>
+<p><code>ListView.vue</code> 的核心：</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+import { onMounted, ref } from &quot;vue&quot;;
+import { api } from &quot;../api&quot;;
+import type { Ticket } from &quot;../store&quot;;
+
+const tickets = ref&lt;Ticket[]&gt;([]);
+const error = ref(&quot;&quot;);
+
+onMounted(async () =&gt; {
+  try { tickets.value = await api&lt;Ticket[]&gt;(&quot;/api/tickets&quot;); }
+  catch (e) { error.value = (e as Error).message; }
+});
+
+const statusText: Record&lt;string, string&gt; = {
+  processing: &quot;处理中&quot;, pending_approval: &quot;待审批&quot;, done: &quot;已办结&quot;,
+};
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;h1&gt;我的工单&lt;/h1&gt;
+  &lt;ul&gt;
+    &lt;li v-for=&quot;t in tickets&quot; :key=&quot;t.id&quot;&gt;
+      &lt;RouterLink :to=&quot;`/tickets/${t.id}`&quot;&gt;
+        #{{ t.id }} {{ t.title }} &lt;span class=&quot;badge&quot;&gt;{{ statusText[t.status] ?? t.status }}&lt;/span&gt;
+      &lt;/RouterLink&gt;
+    &lt;/li&gt;
+  &lt;/ul&gt;
+&lt;/template&gt;</code></pre>
+<p><code>onMounted</code> 在组件出现在页面上之后执行，是拉取首屏数据的标准位置。<code>v-for</code> 循环渲染列表，<code>:key</code> 帮助 Vue 高效追踪每一项（用稳定 id，别用数组下标）。状态文案用映射表转换，数据库里的 <code>pending_approval</code> 在人界面上叫「待审批」——<strong>存储用机器语言，界面用人话</strong>，这层转换放在前端做。</p>
+<h2 id="h-9">详情页：把 Agent 过程变成用户体验</h2>
+<p>全章重心。用户在这个页面看到：工单信息、对话记录、Agent 的实时处理过程，还能继续追问。如果是待审批工单且当前是审批员，还会出现批准/拒绝按钮。</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+import { onMounted, ref } from &quot;vue&quot;;
+import { useRoute } from &quot;vue-router&quot;;
+import { api, streamSSE } from &quot;../api&quot;;
+import type { Ticket, ChatMessage } from &quot;../store&quot;;
+
+const route = useRoute();
+const id = Number(route.params.id);       // 读路径参数
+
+const ticket = ref&lt;Ticket | null&gt;(null);
+const messages = ref&lt;ChatMessage[]&gt;([]);
+const activity = ref&lt;string[]&gt;([]);        // Agent 过程提示
+const input = ref(&quot;&quot;);
+const sending = ref(false);
+const error = ref(&quot;&quot;);
+
+onMounted(async () =&gt; {
+  ticket.value = await api&lt;Ticket&gt;(`/api/tickets/${id}`);
+  // 历史对话也可以从后端读（graph.getState），本练习留给你扩展
+});
+
+async function send() {
+  const content = input.value.trim();
+  if (!content || sending.value) return;
+  input.value = &quot;&quot;;
+  sending.value = true;
+  messages.value.push({ role: &quot;user&quot;, content });   // 自己的消息先上屏
+  activity.value = [];
+  try {
+    await streamSSE(`/api/tickets/${id}/messages`, { content }, (data) =&gt; {
+      // updates 模式的增量：{ 节点名: { 更新的字段 } }
+      const [nodeName, update] = Object.entries(data as Record&lt;string, any&gt;)[0];
+      activity.value.push(`⚙️ ${nodeName} 处理完成`);
+      const msgs = (update as any).messages;
+      if (msgs?.length) {
+        const text = msgs.map((m: any) =&gt; m.content ?? &quot;&quot;).join(&quot;&quot;);
+        if (text) messages.value.push({ role: &quot;assistant&quot;, content: text });
+      }
+    });
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    sending.value = false;
+  }
+}
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;template v-if=&quot;ticket&quot;&gt;
+    &lt;h1&gt;#{{ ticket.id }} {{ ticket.title }}&lt;/h1&gt;
+    &lt;p&gt;{{ ticket.description }}&lt;/p&gt;
+
+    &lt;div class=&quot;chat&quot;&gt;
+      &lt;div v-for=&quot;(m, i) in messages&quot; :key=&quot;i&quot; :class=&quot;['msg', m.role]&quot;&gt;{{ m.content }}&lt;/div&gt;
+      &lt;div v-for=&quot;(a, i) in activity&quot; :key=&quot;'a' + i&quot; class=&quot;activity&quot;&gt;{{ a }}&lt;/div&gt;
+      &lt;div v-if=&quot;sending&quot; class=&quot;activity&quot;&gt;Agent 正在处理…&lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;form @submit.prevent=&quot;send&quot;&gt;
+      &lt;input v-model=&quot;input&quot; placeholder=&quot;继续追问…&quot; :disabled=&quot;sending&quot; /&gt;
+      &lt;button :disabled=&quot;sending&quot;&gt;发送&lt;/button&gt;
+    &lt;/form&gt;
+  &lt;/template&gt;
+&lt;/template&gt;</code></pre>
+<p>这里的体验设计有两个刻意的选择。一是<strong>用户消息先上屏</strong>：不等后端确认，点击发送立刻看到自己的消息，界面的「跟手感」就是这么来的；失败了再提示。二是<strong>过程提示与正文分离</strong>：updates 流里的节点名（classify、consult）渲染成灰色的「⚙️」过程行，节点产出的消息渲染成正式回答——用户同时看到「它在干活」和「干活的结果」，这就是第 9 章说的 updates 模式的最佳用法。</p>
+<p>对比一下就明白这有多重要：没有过程提示，用户面对的是一个转圈 5 秒的输入框，大概率刷新页面重来——而刷新意味着重复提交、重复扣费。<strong>流式不是炫技，是留住用户注意力的必需品。</strong></p>
+<h2 id="h-10">审批中心：最小实现</h2>
+<p>审批员的界面可以很简单：待审批列表 + 每个卡片两个按钮。在 DetailView 上加一段（或单独一个 view，随你组织）：</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+// 待审批列表数据（审批员角色进入时加载）
+const pending = ref&lt;Ticket[]&gt;([]);
+async function loadPending() {
+  pending.value = await api&lt;Ticket[]&gt;(&quot;/api/approvals&quot;);
+}
+async function decide(ticketId: number, approved: boolean) {
+  const r = await api&lt;{ reply: string }&gt;(`/api/approvals/${ticketId}/decide`, {
+    method: &quot;POST&quot;,
+    body: JSON.stringify({ approved }),
+  });
+  messages.value.push({ role: &quot;assistant&quot;, content: r.reply });  // 结果直接进对话流
+  pending.value = pending.value.filter((t) =&gt; t.id !== ticketId); // 从待办里移除
+}
+&lt;/script&gt;</code></pre>
+<p>审批员点「批准」的那一刻，串起的是一条很长的链：浏览器 POST → decide 接口 → <code>Command({ resume: true })</code> → checkpointer 取出冻结状态 → refundFlow 从 interrupt 行继续 → 执行退款 → 结果回传 → 前端渲染。你在第 9 章学的机制，现在是一个真实按钮背后的完整旅程。</p>
+<h2 id="h-11">样式：够用就行的手写 CSS</h2>
+<p>不引组件库，但基本的可读性要有。核心就几类：聊天气泡（用户靠右浅色、助手靠左深色）、过程提示（小字灰色）、徽章（圆角色块）、表单（纵向排列的 label）。全部不到 100 行，写在 <code>style.css</code> 里全局生效。做教学项目，CSS 的目标是「不分散对交互逻辑的注意力」，不是好看——当然，把它做好看是绝佳的课后练习。</p>
+<h2 id="h-12">验收：M3 全角色走查</h2>
+<p>浏览器里按剧本走：</p>
+<ol><li>员工身份提交「差旅住宿报销额度是多少」→ 跳详情页，看到知识库回答和来源；</li><li>追问「审批流程呢」→ 看到「⚙️ classify 处理完成」过程行逐条出现，然后出回答；</li><li>提交「申请退回多扣的 800 元」→ 状态显示待审批；</li><li>切审批员身份 → 审批中心看到卡片 → 点批准 → 对话流里出现执行结果；</li><li>员工回到列表 → 两个工单状态分别是「已办结」。</li></ol>
+<p>全过，M3 达成。这个项目从用户视角已经是个完整产品了。</p>
+<h2 id="h-13">常见坑位</h2>
+<ul><li><strong>SSE 没数据但接口 200</strong>：检查后端响应头是不是 <code>text/event-stream</code>，以及代理/服务器有没有缓冲响应（Vite 代理默认没问题；nginx 需要 <code>proxy_buffering off</code>，第 15 章会撞上）。</li><li><strong>中文乱码或事件解析错位</strong>：<code>TextDecoder</code> 忘了 <code>{ stream: true }</code>，多字节字符被从中间切断。</li><li><strong>页面切换后还在收流</strong>：组件销毁时没有中断 reader（<code>reader.cancel()</code>）。本练习页面简单影响不大，长列表页就要处理，否则流在后台空跑。</li><li><strong>v-for 没 key 或 key 用下标</strong>：消息乱序、输入框状态错位——Vue 复用错了 DOM。</li></ul>
+<h2 id="h-14">小结</h2>
+<p>本章给用户装上了脸：router + views 的页面骨架、api.ts 的 token 封装、fetch 版 SSE 手动解析（缓冲拼接是核心难点）、响应式表单与列表、以及最重要的——把 updates 流渲染成「过程提示 + 正式回答」的双层体验。审批按钮串起了从浏览器点击到图恢复执行的完整链路。</p>
+<p>下一章收官：联调排错、旅程测试、生产构建与部署，以及全课复盘。</p>
+<h2 id="h-15">自测</h2>
+<ol><li>SSE 解析为什么需要 buffer？<code>events.pop()</code> 留下的那段是什么？</li><li>为什么用户消息要「先上屏」而不是等后端确认？</li><li>updates 流里的节点名和节点产出的消息，在界面上分别承担什么角色？</li><li>EventSource 为什么不能用在这个项目？替代方案的关键 API 是什么？</li></ol>
+<p>参考答案：1. 字节流随机切块，一个事件可能跨两块；pop 留下的是末尾不完整的一段，等下一块拼齐再解析。2. 保证界面跟手，网络延迟不转嫁成用户感知；失败再补偿提示。3. 节点名渲染过程提示（它在干活），节点消息渲染正式回答（干活的结果）。4. EventSource 只支持 GET，追问必须 POST；替代方案是 fetch + resp.body.getReader() 手动解析流。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="13-agent-workflow.html">← 第 13 章</a></span>
+    <span><a href="15-deploy-and-review.html">第 15 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</body>
+</html>

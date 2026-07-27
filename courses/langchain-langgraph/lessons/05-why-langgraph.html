@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangGraph 是什么：从链到图的必然 · LangChain + LangGraph 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">LangChain + LangGraph 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">从第 4 章那 30 行代码说起</a></li><li><a href="#h-3">三要素：State、Node、Edge</a></li><li><a href="#h-4">术语地基：图、状态机、循环图</a></li><li><a href="#h-5">诞生背景：LangChain 自己长出来的答案</a></li><li><a href="#h-6">为什么要把循环从代码变成图</a></li><li><a href="#h-7">LangGraph 与 LangChain 的关系</a></li><li><a href="#h-8">场景判断练习：链、Agent 还是图</a></li><li><a href="#h-9">把业务流程画成图：一个思维练习</a></li><li><a href="#h-10">本模块路线图</a></li><li><a href="#h-11">小结</a></li><li><a href="#h-12">自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 5 章 LangGraph 是什么：从链到图的必然</h1>
+<blockquote><p>一句话总结：把第 4 章手写的 Agent 循环抽象成状态、节点、边三要素，理解图编排的设计动机，以及 LangChain 与 LangGraph 的真实分工。</p></blockquote>
+<h2 id="h-2">从第 4 章那 30 行代码说起</h2>
+<p>第 4 章你手写过一个 Agent 循环，核心长这样：</p>
+<pre class="code"><code class="lang-ts">for (let step = 0; step &lt; 8; step++) {
+  const ai = await modelWithTools.invoke(messages);  // 调模型
+  messages.push(ai);
+  if (!ai.tool_calls?.length) return ai.content;      // 判断：要不要继续
+  for (const call of ai.tool_calls) {
+    const result = await tools[call.name].invoke(call.args);  // 执行工具
+    messages.push(new ToolMessage({ content: String(result), tool_call_id: call.id }));
+  }
+}</code></pre>
+<p>当时我们说「整个 Agent 就是一个 for 循环加一个判断」。现在把这堆过程式代码摊平了看，它其实在做三类事情：</p>
+<ul><li>有几段<strong>各自独立的动作</strong>：调模型、执行工具。每段动作读当前的消息数组，干完活，往数组里追加内容。</li><li>有一个<strong>共享的数据载体</strong>：<code>messages</code> 数组。所有动作都读它、写它，它是全场唯一的状态。</li><li>有一套<strong>流转规则</strong>：模型之后，要么结束，要么去工具；工具之后，一定回模型。谁决定往哪走？数据本身（有没有 tool_calls）。</li></ul>
+<p>动作、状态、流转规则。把这三样东西从 for 循环里抽出来，给它们正式的名字，你就得到了 LangGraph 的全部核心概念。</p>
+<h2 id="h-3">三要素：State、Node、Edge</h2>
+<p><strong>State（状态）</strong>：全场共享的数据载体。上手写版里是 <code>messages</code> 数组；在 LangGraph 里它是一个明确定义结构的对象，你想放什么都行——消息、计数器、检索结果、审批标记。每个动作结束后，不直接改 State，而是<strong>返回「我要更新哪些字段」</strong>，由框架按规则合并进 State。这个「返回增量而不是直接改」的约定，是后面持久化、回放、并行都成立的基础，第 6 章细讲。</p>
+<p><strong>Node（节点）</strong>：各自独立的动作。一个节点就是一个函数，输入是当前 State，输出是对 State 的增量更新。调模型是一个节点，执行工具是一个节点，查数据库、调审批、做格式转换，都可以是节点。</p>
+<p><strong>Edge（边）</strong>：节点之间的流转规则。「模型节点结束后去工具节点」是一条边；「根据 State 里有没有 tool_calls 决定去工具还是去终点」是一种带判断的边，叫<strong>条件边</strong>。</p>
+<p>对照一下，手写版的 for 循环翻译成三要素就是：</p>
+<table><thead><tr><th>手写版</th><th>LangGraph</th></tr></thead><tbody><tr><td><code>messages</code> 数组</td><td>State 里的 messages 字段</td></tr><tr><td><code>modelWithTools.invoke(...)</code></td><td>「模型」节点</td></tr><tr><td><code>tools[call.name].invoke(...)</code></td><td>「工具」节点</td></tr><tr><td><code>if (!ai.tool_calls?.length) return</code></td><td>模型节点出发的条件边</td></tr><tr><td><code>for</code> 循环本身</td><td>节点互指形成的循环结构</td></tr></tbody></table>
+<h2 id="h-4">术语地基：图、状态机、循环图</h2>
+<p>三个概念一次说清，都是计算机科学的词，但这里只需要常识级理解。</p>
+<p><strong>有向图（Directed Graph）</strong>：一堆点加上一堆带箭头的线。点是节点，线是边，箭头表示「执行完我，接下来去你」。流程图就是有向图，你早就会画了。</p>
+<p><strong>状态机（State Machine）</strong>：一种思考问题的方式——系统任何时候都处于某个状态，发生某件事就转移到另一个状态。电梯就是状态机：在「待机」状态收到「按了 5 楼」，转移到「上行」。LangGraph 的每次执行都可以这样看：State 是系统状态，节点是引起转移的事件。</p>
+<p><strong>循环图 vs DAG</strong>：DAG（有向无环图）是「不能绕回去」的图，执行路径像瀑布，一泻到底。LCEL 链就是 DAG——模板到模型到解析器，永不回头。Agent 必须能绕回去：模型 → 工具 → 模型 → 工具……直到收工。这种「能绕圈」的图叫循环图（Cyclic Graph）。<strong>支持循环，是 LangGraph 与 LCEL 最本质的分界线</strong>：第 4 章的循环靠你手写 for 实现，LangGraph 把它变成图的原生结构，由框架负责推进和兜底。</p>
+<h2 id="h-5">诞生背景：LangChain 自己长出来的答案</h2>
+<p>LangGraph 不是另一个团队的竞品，它是 LangChain 团队自己的作品。搞清楚它为什么被造出来，本模块的学习目标就清楚了一半。</p>
+<p>2023 年 LangChain 爆红之后，社区用它做 Agent 的热情高涨，但抱怨也越来越集中：Chain 是直线，Agent 要绕圈；当时的 Agent 实现（<code>AgentExecutor</code> 等）把循环、解析、错误处理揉在一起，行为像个黑盒——模型在中间某步做了奇怪的决定，你很难干预，也很难让流程在特定位置停下来等人。开发者想要的是「自己掌控循环的每一环」，而不是「参数更多的黑盒」。</p>
+<p>2024 年初，LangGraph 作为回答发布：不提供「更大的 Agent」，而是提供一套描述<strong>任意</strong>流程的底层结构——图。Agent 循环只是图上的一种特定形状，你可以画出任何别的形状。它的底层执行借鉴了 Google 2010 年提出的 Pregel 图计算模型（下文会讲到），这在当时是做 LLM 编排的框架里独一份的设计。</p>
+<p>2025 年 10 月，LangGraph 与 LangChain 同步发布 v1：LangChain 的 Agent 能力（<code>createAgent</code>）直接建立在 LangGraph 之上，旧的黑盒 Agent API 全部退场。这个架构决定很说明问题——<strong>图成了地基，Agent 成了地基上的一种预制建筑</strong>。你学 LangGraph 不是在学一个备选工具，是在学 LangChain 系产品的底层。</p>
+<h2 id="h-6">为什么要把循环从代码变成图</h2>
+<p>有人会问：for 循环写得挺好，为什么非要抽象成图？第 4 章末尾的四个场景已经给了一半答案，这里把它说透。</p>
+<p><strong>第一，流程要能被看见。</strong> for 循环的流程藏在代码逻辑里，新人要读完全部代码才能在脑子里重建它。图是显式的：节点和边的定义摆在那，甚至可以导出成一张可视化流程图。流程即文档。</p>
+<p><strong>第二，状态要能被管理。</strong> 手写版的消息数组是私有变量，进程死了就没了。图框架把 State 当成一等公民：每一步执行完，框架都知道 State 变成了什么样，可以存下来（第 8 章的持久化）、可以回放历史（第 8 章的快照）、可以从中途恢复（第 9 章的中断续跑）。这些能力如果手写，每一项都是一个大工程。</p>
+<p><strong>第三，暂停和恢复要成为可能。</strong> for 循环跑到一半想停下来等人审批，你得把循环拆成「前半段」和「后半段」，中间状态手动存取，代码立刻臃肿。图框架知道「执行到哪个节点了」，暂停就是记住位置，恢复就是从位置继续，这是第 9 章的主题。</p>
+<p><strong>第四，多人（多 Agent）协作要有结构。</strong> 循环套循环的代码没人看得懂，但「调度节点根据情况分发给不同专业节点」在图里是自然表达，第 10 章见。</p>
+<p>一句话：for 循环能表达 Agent 的<strong>逻辑</strong>，但表达不了 Agent 的<strong>工程需求</strong>。LangGraph 把循环结构化的同时，顺带解决了状态、暂停、协作三个工程问题。</p>
+<h2 id="h-7">LangGraph 与 LangChain 的关系</h2>
+<p>第 4 章的对比表给过结论：LangChain 管零件，LangGraph 管流程。这里补几个你没问但会踩的细节。</p>
+<p><strong>技术上，LangGraph 不依赖 LangChain 的部件，但它们配合最顺手。</strong> 节点函数是普通的 async 函数，你在里面可以裸调模型 API，也可以用 ChatModel、LCEL 链、<code>createAgent</code> 造好的 Agent。实践中，节点内部几乎总是 LangChain 部件——这也是为什么模块一在前。</p>
+<p><strong><code>createAgent</code> 本身就是 LangGraph 建的。</strong> 第 4 章用的 <code>createAgent</code>，内部就是一张「模型节点 + 工具节点 + 条件边」的图。你从第 4 章起就在用 LangGraph 了，只是框架替你画了图。学完本模块，你可以自己画出比它复杂得多的图。</p>
+<p>眼见为实。<code>createAgent</code> 造出来的 agent 可以直接导出内部结构（2026-07-27 在 v1.5.4 上实测）：</p>
+<pre class="code"><code class="lang-ts">const agent = createAgent({ model, tools: [add] });
+console.log(await agent.drawMermaid());</code></pre>
+<p>打印出来的 Mermaid 源码渲染后就是这张图：</p>
+<div class="mermaid">flowchart TD
+  S([&quot;__start__&quot;]) --&gt; M[&quot;model_request&quot;]
+  M -.-&gt; T[&quot;tools&quot;]
+  M -.-&gt; E([&quot;__end__&quot;])
+  T --&gt; M</div>
+<p>看它的形状：起点进 <code>model_request</code>（模型节点），模型之后条件分叉——去 <code>tools</code>（工具节点）或去终点，工具之后回到模型。<strong>和第 4 章手写的循环一模一样，连「工具完事回模型」的回边都在。</strong> 下一章你会亲手画出这张图，到时候对照着看。</p>
+<p><strong>执行模型有个名字，叫 Pregel。</strong> LangGraph 的底层执行借鉴了 Google 的 Pregel 图计算模型。直觉版理解（不需要深究）：图的执行按「步」推进，每一步里，所有「该执行」的节点并行跑完，框架统一收集它们的增量更新合并进 State，然后看边决定下一步谁执行。记住「按步推进、统一合并」这八个字，第 7 章并行分支、第 8 章快照语义都会用到。</p>
+<p><strong>生态里还有两个名字会碰到。</strong> LangGraph Studio 是官方的可视化调试工具，能把运行中的图画出来、单步执行、检查每一步的 State；LangGraph Platform 是托管部署方案，把图变成可调用的服务。第 10 章讲生产化时会给出「什么时候需要它们」的判断标准，现在知道名字就够。</p>
+<p><strong>什么时候不要上 LangGraph。</strong> 直线流程（第 2、3 章的链）用它纯属杀鸡用牛刀；单个 Agent 循环用 <code>createAgent</code> 已经够。上 LangGraph 的信号是第 4 章那四个场景：确定性分支、跨轮持久状态、人工介入、多 Agent 协作。</p>
+<h2 id="h-8">场景判断练习：链、Agent 还是图</h2>
+<p>学框架最怕的是手里有了锤子，看什么都像钉子。下面六个场景，先自己判断该用哪层工具，再对照答案：</p>
+<table><thead><tr><th>场景</th><th>你的判断</th><th>参考答案</th></tr></thead><tbody><tr><td>把用户输入翻译成英文并输出 JSON</td><td>？</td><td>LCEL 链。步骤固定，一次调用的事</td></tr><tr><td>问答机器人，要先检索文档再回答</td><td>？</td><td>LCEL 链。检索→生成是确定的直线</td></tr><tr><td>助手能查天气、算汇率，自己决定用哪个</td><td>？</td><td>createAgent。需要自主选工具，但流程就是标准循环</td></tr><tr><td>客服系统：简单问题自动答，投诉必转人工</td><td>？</td><td>LangGraph。分支规则是业务规则，不能交给模型自由发挥</td></tr><tr><td>代码审查 Agent，每处高危修改要人确认</td><td>？</td><td>LangGraph。人工介入是图的 interrupt 原生能力</td></tr><tr><td>调研助手：一个查资料、一个写稿、一个审校</td><td>？</td><td>LangGraph。多 Agent 协作需要结构化的状态与交接</td></tr></tbody></table>
+<p>规律很清楚：<strong>流程的确定性越强，越该用简单的工具；流程的拓扑越复杂，越需要图。</strong> 判断错方向的代价是真实的：该用链的上了图，代码量翻倍还没好处；该用图的用链硬拧，维护到怀疑人生。</p>
+<h2 id="h-9">把业务流程画成图：一个思维练习</h2>
+<p>写代码之前，先练「翻译」：把文字描述的业务流程翻译成节点和边。这是用 LangGraph 解决问题的第一步，也是最容易被跳过的一步。</p>
+<p>拿「客服工单处理」练手（这正是模块三项目的雏形）：</p>
+<blockquote><p>用户提出问题后，系统先判断问题类型：能用知识库回答的，检索后直接回复；涉及退款的，必须先经人工审批，批准后才能执行退款并回复；其他类型转人工客服。</p></blockquote>
+<p>试着拆解。节点有哪些？「判断类型」「检索知识库」「生成回复」「人工审批」「执行退款」「转人工」。State 里该放什么？用户问题、问题类型、检索结果、审批结果、最终回复。边怎么连？起点进「判断类型」，然后条件边分三路：知识库路去「检索」，退款路去「人工审批」再到「执行退款」，其他去「转人工」，最后都汇入「生成回复」或直接结束。</p>
+<p>画在纸上就是这样（画不出来也没关系，下一章开始用代码画）：</p>
+<div class="mermaid">flowchart LR
+  S([&quot;用户提问&quot;]) --&gt; T{&quot;判断类型&quot;}
+  T --&gt;|知识库可答| R[&quot;检索知识库&quot;] --&gt; G[&quot;生成回复&quot;] --&gt; E([&quot;结束&quot;])
+  T --&gt;|退款| A[&quot;人工审批&quot;] --&gt; X[&quot;执行退款&quot;] --&gt; G
+  T --&gt;|其他| H[&quot;转人工&quot;] --&gt; E</div>
+<p>注意三个地方：「判断类型」后面是条件边，一个节点分出多路；「人工审批」是个会暂停等人的节点，第 9 章你就学到它的实现；多条路在「生成回复」合流，这种「分而复合」的结构第 7 章会专门练。</p>
+<h2 id="h-10">本模块路线图</h2>
+<p>接下来五章这样走：</p>
+<ul><li><strong>第 6 章</strong>：State、Node、Edge 上手，跑通第一张图，搞懂 Reducer。</li><li><strong>第 7 章</strong>：条件边与循环，用图重写第 4 章的 Agent，加上并行分支。</li><li><strong>第 8 章</strong>：Checkpointer 持久化，让图能记忆、能回放、能断点续跑。</li><li><strong>第 9 章</strong>：interrupt 人工介入 + 三种粒度的流式输出。</li><li><strong>第 10 章</strong>：多 Agent、子图、LangSmith 观测与部署决策。</li></ul>
+<p>每章都在前一章的图上加东西，到最后你会拥有一套完整的、能上线的 Agent 工作流技术栈。</p>
+<h2 id="h-11">小结</h2>
+<p>本章没有写一行 LangGraph 代码，但完成了最重要的认知转换：把手写 Agent 循环拆成状态、节点、边三要素；明确了「支持循环」是图与链的本质分界；说清了为什么工程需求（看得见、管得住、停得下、协作得了）逼着我们把循环从代码变成图。LangChain 与 LangGraph 不是二选一，而是「零件」与「图纸」的关系，<code>createAgent</code> 就是两者结合的现成证据。</p>
+<p>下一章开始写代码：第一张图，两个节点，跑通它。</p>
+<h2 id="h-12">自测</h2>
+<ol><li>手写 Agent 循环里的 <code>messages</code> 数组、模型调用、工具执行、<code>if</code> 判断，分别对应 LangGraph 的什么概念？</li><li>LCEL 链和 Agent 循环在图的形态上有什么本质区别？</li><li>节点函数为什么不直接修改 State，而是返回增量？</li><li>「<code>createAgent</code> 内部就是一张 LangGraph 图」这个事实，对理解两个框架的关系有什么启发？</li></ol>
+<p>参考答案：1. State、模型节点、工具节点、条件边。2. LCEL 链是 DAG（无环，一泻到底），Agent 循环是循环图（模型与工具互指，可绕圈）。3. 增量约定让框架统一掌握每次状态变化，持久化、历史回放、并行合并才有了基础。4. 两框架是上下层而非竞争关系：LangGraph 提供编排骨架，LangChain 部件填充节点内部，简单场景用现成封装，复杂场景自己画图。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="04-tools-and-agents.html">← 第 4 章</a></span>
+    <span><a href="06-first-graph.html">第 6 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "neutral" });</script>
+</body>
+</html>

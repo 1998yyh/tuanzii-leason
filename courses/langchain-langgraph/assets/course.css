@@ -1,0 +1,239 @@
+/* 团子课堂 · 课程页设计系统（与 portal.css 共用同一套 token） */
+:root {
+  /* 背景色阶：暖白纸感 */
+  --bg-base: #f6f5f2;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #eceae5;
+  --bg-muted: #e5e2dc;
+
+  --text-primary: #3f3a34;   /* 暖灰墨，长文阅读不刺眼 */
+  --text-heading: #211f1c;
+  --text-secondary: #57534e;
+  --text-muted: #78716c;
+
+  /* 朱柿 accent */
+  --accent: #c2410c;
+  --accent-hover: #9a3412;
+  --accent-dim: rgba(194, 65, 12, 0.07);
+
+  /* 边框：半透明墨色 */
+  --border: rgba(33, 31, 28, 0.1);
+  --border-strong: rgba(33, 31, 28, 0.18);
+  --border-subtle: rgba(33, 31, 28, 0.06);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+
+  --font-sans: "DM Sans", "Noto Sans SC", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", Menlo, Consolas, "JetBrains Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  line-height: 1.75;
+  color: var(--text-primary);
+  background: var(--bg-base);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.site-header {
+  padding: 14px 24px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.site-header a {
+  color: var(--text-heading);
+}
+.site-header a:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+main.chapter,
+main.home {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  background: var(--bg-elevated);
+  min-height: 100vh;
+  /* 白纸浮在暖底上，两侧细描边即可 */
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+}
+
+h1, h2, h3, h4 {
+  color: var(--text-heading);
+  line-height: 1.35;
+}
+h1 { font-size: 1.8rem; margin: 0.5em 0; }
+h2 {
+  font-size: 1.4rem;
+  margin: 1.8em 0 0.6em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+h3 { font-size: 1.15rem; margin: 1.5em 0 0.5em; }
+h4 { font-size: 1rem; margin: 1.2em 0 0.4em; color: var(--accent); }
+
+blockquote {
+  margin: 1em 0;
+  padding: 8px 16px;
+  border-left: 4px solid var(--accent);
+  background: var(--accent-dim);
+  color: var(--text-secondary);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+blockquote p { margin: 0.3em 0; }
+
+/* 代码块：暖墨底反色，白纸上的视觉锚点 */
+pre.code {
+  background: #262421;
+  border: 1px solid rgba(33, 31, 28, 0.2);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: #eae6e0;
+}
+code {
+  font-family: var(--font-mono);
+}
+p code,
+li code,
+td code {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.88em;
+  color: var(--accent-hover);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.92rem;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: var(--bg-sunken);
+  color: var(--text-heading);
+}
+td {
+  background: transparent;
+}
+
+/* mermaid 默认浅色主题：给图表区白纸底衬 */
+.mermaid {
+  margin: 1.2em 0;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px 12px;
+  overflow-x: auto;
+}
+
+.toc {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 20px;
+  margin: 16px 0 28px;
+  font-size: 0.92rem;
+}
+.toc h2 {
+  font-size: 1rem;
+  margin: 0 0 6px;
+  border: none;
+  color: var(--accent);
+}
+.toc ol { margin: 0; padding-left: 1.4em; }
+.toc a { color: var(--text-secondary); }
+.toc a:hover { color: var(--accent); }
+
+.chapter-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 48px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-size: 0.95rem;
+}
+.chapter-nav a {
+  color: var(--accent);
+}
+
+/* 首页 */
+.subtitle {
+  font-size: 1.1rem;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+.desc { color: var(--text-secondary); }
+
+.module-tag {
+  display: inline-block;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(194, 65, 12, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 3px 10px;
+  font-size: 0.85rem;
+  margin: 4px 6px 4px 0;
+}
+
+.lesson-list { padding: 0; list-style: none; }
+.lesson-card { margin: 10px 0; }
+.lesson-card a,
+.lesson-card span {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  background: var(--bg-sunken);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.lesson-card a:hover {
+  border-color: rgba(194, 65, 12, 0.45);
+  box-shadow: 0 0 0 1px rgba(194, 65, 12, 0.18), 0 6px 20px rgba(33, 31, 28, 0.08);
+  text-decoration: none;
+}
+.lesson-card strong {
+  display: block;
+  color: var(--text-heading);
+}
+.lesson-card em {
+  display: block;
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-top: 4px;
+}
+.lesson-pending span { opacity: 0.45; }
+
+@media (max-width: 640px) {
+  main.chapter,
+  main.home { padding: 20px 16px 48px; }
+  h1 { font-size: 1.4rem; }
+}
