@@ -3,28 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>🍡 团子课堂</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="description" content="团子课堂：AI 与全栈技术精选课程，从原理到项目实战，每门课都交付可运行成果。">
+  <title>🍡 团子课堂 · AI 与全栈技术精选课程</title>
   <link rel="stylesheet" href="portal.css">
 </head>
 <body>
-  <div class="page">
-    <header class="hero">
-      <h1 class="brand">🍡 团子课堂</h1>
-      <p class="tagline">AI 与全栈技术精选课程</p>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="brand" href="./index.html">🍡 团子课堂</a>
+      <nav>
+        <a href="#course-grid">课程目录</a>
+        <a href="courses/rag/reference/glossary.html">术语表</a>
+      </nav>
     </header>
 
+    <section class="course-hero">
+      <div class="eyebrow">AI · 全栈实战课程</div>
+      <h1>团子课堂</h1>
+      <p class="lead">AI 与全栈技术精选课程：从诞生背景到原理进阶，再到完整项目实战，每门课都交付可运行的成果。</p>
+      <div class="meta-row">
+        <span class="pill">项目驱动</span>
+        <span class="pill">从入门到进阶</span>
+        <span class="pill">Markdown + 静态 HTML</span>
+        <span class="pill">持续更新</span>
+      </div>
+    </section>
+
+    <div class="section-heading">
+      <div>
+        <h2>课程目录</h2>
+        <p>每门课按模块组织，先建立原理与直觉，再进入可交付的全栈项目实战。</p>
+      </div>
+    </div>
+
     <main>
-      <div id="course-grid" class="course-grid" aria-live="polite">
+      <div id="course-grid" class="chapter-grid" aria-live="polite">
         <p class="status-msg">加载课程中…</p>
       </div>
     </main>
 
-    <footer class="site-footer">
-      <p>© 2026 团子课堂</p>
-    </footer>
+    <footer class="site-footer">🍡 团子课堂 · AI 与全栈技术精选课程</footer>
   </div>
   <script src="portal.js"></script>
 </body>

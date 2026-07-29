@@ -3,108 +3,148 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LangChain + LangGraph 从入门到实战进阶</title>
+<meta name="description" content="面向 0 基础或有一定编程经验的 AI 全栈开发学习者，讲清 LangChain 与 LangGraph 的定位、异同与实战用法，并通过完整的 Ticket Polit 项目交付可运行成果。">
+<title>LangChain + LangGraph 从入门到实战进阶 · 团子课堂</title>
 <link rel="stylesheet" href="assets/course.css">
+<style>:root { --course-mark: "LG"; }</style>
 </head>
 <body>
-<main class="home">
-<h1>LangChain + LangGraph 从入门到实战进阶</h1>
-<p class="subtitle">从诞生背景到原理进阶，再到 Ticket Polit 全栈项目实战</p>
-<p class="desc">面向 0 基础或有一定编程经验的 AI 全栈开发学习者，讲清 LangChain 与 LangGraph 的定位、异同与实战用法，并通过完整的 Ticket Polit 项目交付可运行成果。</p>
-<p class="module-tag">模块一 LangChain 从入门到进阶</p><p class="module-tag">模块二 LangGraph 从入门到进阶</p><p class="module-tag">模块三 Ticket Polit 项目实战</p>
-<h2>章节目录</h2>
-<ol class="lesson-list">
-<li class="lesson-card ">
-    <a href="lessons/01-what-is-langchain.html">
-      <strong>第 1 章 LangChain 是什么：从「会调 API」到「会做 AI 应用」</strong>
-      <em>从裸调 API 的痛点出发，认识 LangChain 的生态版图与它在 AI Agent 时代的角色。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/02-lcel-core-components.html">
-      <strong>第 2 章 核心三件套与 LCEL：模型、提示词、输出解析</strong>
-      <em>掌握 Runnable 协议与管道组合，把调模型拆成可替换的部件。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/03-rag-retrieval.html">
-      <strong>第 3 章 给模型补上知识：RAG 与检索增强实战</strong>
-      <em>从文档加载到向量检索，建成一条可问答的 RAG 链。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/04-tools-and-agents.html">
-      <strong>第 4 章 工具调用与 Agent：LangChain 的天花板在哪里</strong>
-      <em>手写 Agent 循环看清机制，理解为什么复杂编排需要 LangGraph。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/05-why-langgraph.html">
-      <strong>第 5 章 LangGraph 是什么：从链到图的必然</strong>
-      <em>把手写 Agent 循环抽象成状态、节点、边，理解图编排的设计动机。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/06-first-graph.html">
-      <strong>第 6 章 第一张图：State、Node、Edge 实战</strong>
-      <em>跑通最小图，掌握 Reducer 与状态更新语义。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/07-conditional-edges.html">
-      <strong>第 7 章 分支与循环：条件边让图活起来</strong>
-      <em>用条件边重建 Agent 循环，掌握循环终止与并行分支。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/08-checkpointer-memory.html">
-      <strong>第 8 章 记忆与持久化：Checkpointer 让图记住一切</strong>
-      <em>实现可重启续聊的 Agent，理解快照、回放与长短期记忆分层。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/09-human-in-the-loop.html">
-      <strong>第 9 章 人在回路：中断、审批与流式输出</strong>
-      <em>用 interrupt/resume 实现人工审批，掌握三种粒度的流式输出。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/10-multi-agent-production.html">
-      <strong>第 10 章 进阶：多 Agent、子图与生产化</strong>
-      <em>Supervisor 多 Agent 协作、子图封装、LangSmith 观测与部署决策。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/11-project-kickoff.html">
-      <strong>第 11 章 项目导览：需求、架构与工程初始化</strong>
-      <em>解读 Ticket Polit 需求与技术方案，搭好前后端骨架并联通。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/12-backend-foundation.html">
-      <strong>第 12 章 后端地基：数据模型、鉴权与核心 API</strong>
-      <em>按后端技术方案落地领域模型与核心业务接口。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/13-agent-workflow.html">
-      <strong>第 13 章 后端 AI 内核：LangGraph Agent 工作流落地</strong>
-      <em>把 AI 需求翻译成图设计，实现带持久化与流式输出的 Agent 工作流。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/14-frontend-implementation.html">
-      <strong>第 14 章 前端实现：页面、状态与 AI 交互体验</strong>
-      <em>按前端技术方案实现全部页面与流式 AI 交互体验。</em>
-    </a>
-  </li>
-<li class="lesson-card ">
-    <a href="lessons/15-deploy-and-review.html">
-      <strong>第 15 章 联调、测试、部署与复盘</strong>
-      <em>端到端联调排错、测试与部署落地，复盘全课技术决策。</em>
-    </a>
-  </li>
-</ol>
-</main>
+<div class="site-shell">
+  <header class="topbar">
+    <a class="brand" href="./index.html">LangChain + LangGraph</a>
+    <nav>
+      <a href="../../index.html">🍡 团子课堂</a>
+      <a href="./index.html">课程目录</a>
+    </nav>
+  </header>
+
+  <section class="course-hero">
+    <div class="eyebrow">LangChain + LangGraph · 项目实战课程</div>
+    <h1>LangChain + LangGraph<br>从入门到实战进阶</h1>
+    <p class="lead">面向 0 基础或有一定编程经验的 AI 全栈开发学习者，讲清 LangChain 与 LangGraph 的定位、异同与实战用法，并通过完整的 Ticket Polit 项目交付可运行成果。</p>
+    <div class="meta-row">
+      <span class="pill">15 章 · 3 模块</span>
+      <span class="pill">0 基础友好</span>
+      <span class="pill">Ticket Polit 全栈实战</span>
+    </div>
+  </section>
+
+  <div class="section-heading">
+    <div>
+      <h2>课程目录</h2>
+      <p>从诞生背景到原理进阶，再到 Ticket Polit 全栈项目实战。</p>
+    </div>
+  </div>
+
+  <section class="module-section">
+    <h2><span class="module-label">模块一</span>LangChain 从入门到进阶</h2>
+    <div class="chapter-grid">
+      <a class="chapter-card" href="lessons/01-what-is-langchain.html">
+        <small>第 1 章</small>
+        <h3>LangChain 是什么：从「会调 API」到「会做 AI 应用」</h3>
+        <p>从裸调 API 的痛点出发，认识 LangChain 的生态版图与它在 AI Agent 时代的角色。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/02-lcel-core-components.html">
+        <small>第 2 章</small>
+        <h3>核心三件套与 LCEL：模型、提示词、输出解析</h3>
+        <p>掌握 Runnable 协议与管道组合，把调模型拆成可替换的部件。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/03-rag-retrieval.html">
+        <small>第 3 章</small>
+        <h3>给模型补上知识：RAG 与检索增强实战</h3>
+        <p>从文档加载到向量检索，建成一条可问答的 RAG 链。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/04-tools-and-agents.html">
+        <small>第 4 章</small>
+        <h3>工具调用与 Agent：LangChain 的天花板在哪里</h3>
+        <p>手写 Agent 循环看清机制，理解为什么复杂编排需要 LangGraph。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="module-section">
+    <h2><span class="module-label">模块二</span>LangGraph 从入门到进阶</h2>
+    <div class="chapter-grid">
+      <a class="chapter-card" href="lessons/05-why-langgraph.html">
+        <small>第 5 章</small>
+        <h3>LangGraph 是什么：从链到图的必然</h3>
+        <p>把手写 Agent 循环抽象成状态、节点、边，理解图编排的设计动机。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/06-first-graph.html">
+        <small>第 6 章</small>
+        <h3>第一张图：State、Node、Edge 实战</h3>
+        <p>跑通最小图，掌握 Reducer 与状态更新语义。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/07-conditional-edges.html">
+        <small>第 7 章</small>
+        <h3>分支与循环：条件边让图活起来</h3>
+        <p>用条件边重建 Agent 循环，掌握循环终止与并行分支。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/08-checkpointer-memory.html">
+        <small>第 8 章</small>
+        <h3>记忆与持久化：Checkpointer 让图记住一切</h3>
+        <p>实现可重启续聊的 Agent，理解快照、回放与长短期记忆分层。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/09-human-in-the-loop.html">
+        <small>第 9 章</small>
+        <h3>人在回路：中断、审批与流式输出</h3>
+        <p>用 interrupt/resume 实现人工审批，掌握三种粒度的流式输出。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/10-multi-agent-production.html">
+        <small>第 10 章</small>
+        <h3>进阶：多 Agent、子图与生产化</h3>
+        <p>Supervisor 多 Agent 协作、子图封装、LangSmith 观测与部署决策。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="module-section">
+    <h2><span class="module-label">模块三</span>Ticket Polit 项目实战</h2>
+    <div class="chapter-grid">
+      <a class="chapter-card" href="lessons/11-project-kickoff.html">
+        <small>第 11 章</small>
+        <h3>项目导览：需求、架构与工程初始化</h3>
+        <p>解读 Ticket Polit 需求与技术方案，搭好前后端骨架并联通。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/12-backend-foundation.html">
+        <small>第 12 章</small>
+        <h3>后端地基：数据模型、鉴权与核心 API</h3>
+        <p>按后端技术方案落地领域模型与核心业务接口。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/13-agent-workflow.html">
+        <small>第 13 章</small>
+        <h3>后端 AI 内核：LangGraph Agent 工作流落地</h3>
+        <p>把 AI 需求翻译成图设计，实现带持久化与流式输出的 Agent 工作流。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/14-frontend-implementation.html">
+        <small>第 14 章</small>
+        <h3>前端实现：页面、状态与 AI 交互体验</h3>
+        <p>按前端技术方案实现全部页面与流式 AI 交互体验。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+      <a class="chapter-card" href="lessons/15-deploy-and-review.html">
+        <small>第 15 章</small>
+        <h3>联调、测试、部署与复盘</h3>
+        <p>端到端联调排错、测试与部署落地，复盘全课技术决策。</p>
+        <span class="state">开始阅读 →</span>
+      </a>
+    </div>
+  </section>
+
+  <footer class="site-footer">LangChain + LangGraph 从入门到实战进阶 · 🍡 团子课堂</footer>
+</div>
 </body>
 </html>

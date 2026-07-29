@@ -53,7 +53,7 @@ tuanzii-leason/
         ├── index.html
         ├── course.json
         ├── lessons/*.html
-        └── assets/     # 含 course.css（课程页共用）
+        └── assets/     # 含 course.css + course.js（课程页共用）
 ```
 
 ## 构建说明
@@ -66,4 +66,4 @@ tuanzii-leason/
 
 ## 视觉
 
-浅色纸感风：暖白底 `#f6f5f2` + 墨色文字 + 朱柿 `#c2410c` 点睛，卡片封面为 slug 哈希的 pastel 渐变，代码块用暖墨底反色。门户与课程页共用同一套设计 token。
+Guardnet 暗黑风（参考 teach-yourself-skill/examples）：纯黑底 `#000` + 冰蓝 accent `#8fb1ff`，hero 区大字标题 + 巨型水印 + 辉光光斑，章节卡片为 3 列辉光网格；课时页为「正文卡片 + 粘性目录侧栏」双栏布局，代码块自动包成带语言标签和一键复制的卡片，mermaid 用 dark 主题渲染。门户 portal.css 与课程页 course.css 共用同一套设计 token。
