@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 全景：索引期与查询期两条流水线 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">先建立全景：一次问答背后的完整旅程</a></li><li><a href="#h-3">为什么非要拆成两条</a></li><li><a href="#h-4">五个核心组件，先混个脸熟</a></li><li><a href="#h-5">环境搭建：先让模型能说话</a></li><li><a href="#h-12">最小 RAG：手写一遍全流程</a></li><li><a href="#h-18">这个玩具和工业系统的差距</a></li><li><a href="#h-19">小结与自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 2 章 RAG 全景：索引期与查询期两条流水线</h1>
+<blockquote><p>一句话总结：把 RAG 拆成五个核心组件、两条流水线，搭好开发环境，亲手跑通第一个端到端的最小 RAG。</p></blockquote>
+<h2 id="h-2">先建立全景：一次问答背后的完整旅程</h2>
+<p>上一章我们从需求侧认识了 RAG：先查资料，再让模型基于资料回答。这一章换到工程侧，把这个思路拆成可以动手实现的零件。</p>
+<p>任何 RAG 系统，不管是几百行代码的玩具还是大厂的生产系统，都由<strong>两条在不同时间运行的流水线</strong>组成：</p>
+<div class="mermaid">flowchart LR
+  subgraph 索引期[&quot;索引期（文档进来时跑，建一次以后反复用）&quot;]
+    A[&quot;文档&quot;] --&gt; B[&quot;① 加载&quot;] --&gt; C[&quot;② 分块&quot;] --&gt; D[&quot;③ 向量化&quot;] --&gt; E[&quot;④ 存入向量库&quot;]
+  end
+  subgraph 查询期[&quot;用户每次提问时跑&quot;]
+    Q[&quot;用户问题&quot;] --&gt; QV[&quot;问题向量化&quot;] --&gt; R[&quot;⑤ 检索最相关的块&quot;] --&gt; P[&quot;块 + 问题组装成 Prompt&quot;] --&gt; M[&quot;模型生成回答&quot;]
+  end
+  E -.-&gt; R</div>
+<p>索引期做的是「备料」：把文档加工成方便查找的形态，存起来。查询期做的是「炒菜」：用户问题来了，从备好的料里挑出最相关的，交给模型炒成答案。两条线咬合的接口是向量库——索引期写进去，查询期读出来。</p>
+<h2 id="h-3">为什么非要拆成两条</h2>
+<p>直接回答一个问题不就行了，为什么要把流程拆成两半？算一笔时间账就明白了。</p>
+<p>假设你有一万份文档。如果不做索引，每次有人提问，系统都得现场把一万份文档挨个和问题比对一遍，一次问答几分钟，谁也等不起。而「把文档加工成可快速查找的形态」这件事，和「用户问了什么」无关，完全可以提前做、只做一次（文档有更新时增量补做）。这就是索引期存在的理由：把贵的、能提前做的工作从前端问答的关键路径上挪走。</p>
+<p>挪走之后，查询期每次要做的只剩下：把问题也加工成同样形态，在现成的索引里快速找出相关块，组装，生成。这一步可以压到秒级。你在用任何一个知识库问答产品时感到的「即问即答」，背后都是这个分工。</p>
+<p>这个分工还带来一个工程上的便利：文档更新不用推倒重来。新来了十份文档，只对这十份跑索引期，追加进向量库就行，原来的一万份原地不动。这叫增量索引。删除也类似，把对应向量从库里删掉，检索自然就搜不到了。第 1 章说 RAG「知识更新分钟级」，靠的就是这个性质。</p>
+<h2 id="h-4">五个核心组件，先混个脸熟</h2>
+<p>图里的每个方框都对应一个组件，后面三章会逐个深挖，现在先建立整体印象。</p>
+<p><strong>① 加载（Loading）</strong>：把各种格式的文档（Markdown、PDF、Word、网页）读进来变成纯文本。听起来简单，麻烦全在细节里：PDF 的排版会打乱阅读顺序，扫描件根本没有文本层，表格和代码块容易被拆烂。实战项目的第 13 章会专门对付它。</p>
+<p><strong>② 分块（Chunking）</strong>：把长文档切成小片段。为什么不能整篇处理，切多大合适，从哪下刀，学问很深，是第 4 章的全部内容。</p>
+<p><strong>③ 向量化（Embedding）</strong>：把每个文本块转成一串数字（向量），让「语义相近」变成「数字距离相近」。RAG 能找到「字面不同但意思相同」的内容，靠的就是它。选哪个 Embedding 模型、向量多少维，直接影响检索质量的上限。第 3 章讲透。</p>
+<p><strong>④ 向量库（Vector Database）</strong>：存向量并支持「按相似度快速查找」的存储。文档少的时候数组就行，上了规模就得靠专门的索引结构。本课用 PostgreSQL + pgvector，第 5 章从零装到用。</p>
+<p><strong>⑤ 检索 + 生成（Retrieve &amp; Generate）</strong>：查询期的大脑。把问题向量化，去向量库要最相关的几个块，把块和问题组装成 Prompt，调模型出答案。这一步看着流程最短，其实门道最多：问题怎么理解、块取几个、Prompt 怎么组、答不上来怎么办。模块二的第 6 到 9 章，基本上就是在给这一步做各种优化。</p>
+<p>今天的目标：用这五个组件的最简形态，手工搭一条完整链路。每个组件都先用「能跑就行」的版本，后面再一个个换成工业级版本。</p>
+<h2 id="h-5">环境搭建：先让模型能说话</h2>
+<h3 id="h-6">完成标准</h3>
+<p>这一节做完，你应该在终端看到模型回复了一句话自我介绍。已经配好 Node 环境和模型 API 的同学，直接跳到「跑通第一次模型调用」核验即可。</p>
+<h3 id="h-7">核验 Node.js</h3>
+<p>本课所有示例代码是 TypeScript，跑在 Node.js 上。要求 Node.js 20 或以上。打开终端（macOS 用「终端」，Windows 用 PowerShell）：</p>
+<pre class="code"><code class="lang-bash">node --version</code></pre>
+<p>看到 <code>v20.x.x</code> 或更高就过关。没装或版本太低的，去 <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js 官网</a> 下载 LTS 版本安装，macOS 也可以用 <code>brew install node</code>。装完重开终端再验一次。npm 会随 Node 一起装好，不用单独处理。</p>
+<h3 id="h-8">初始化项目</h3>
+<p>找一个顺手的位置建课程工作目录，后面所有章节的代码都放这里：</p>
+<pre class="code"><code class="lang-bash">mkdir rag-course &amp;&amp; cd rag-course
+npm init -y</code></pre>
+<p><code>npm init -y</code> 生成一个默认的 <code>package.json</code>，它是项目的「户口本」，记录项目名字和依赖清单。然后做两件小配置。第一，把 <code>package.json</code> 里加一行 <code>&quot;type&quot;: &quot;module&quot;</code>，启用 ESM 模块语法（就是 <code>import</code> / <code>export</code> 写法，本课全程用它）。第二，安装三个依赖：</p>
+<pre class="code"><code class="lang-bash">npm install openai dotenv
+npm install --save-dev tsx typescript</code></pre>
+<p>三个包的分工：<code>openai</code> 是 OpenAI 官方的 SDK，但因为它遵循的 OpenAI 接口协议已经是行业事实标准，智谱、DeepSeek、本地 Ollama 都兼容这套协议，所以这一个包能通吃多家供应商——这是本课「换供应商只改配置」的关键。<code>dotenv</code> 负责从 <code>.env</code> 文件读取密钥等配置，避免把密钥写死在代码里。<code>tsx</code> 让我们能直接运行 TypeScript 文件而不用先编译，学习阶段省掉一道工序。</p>
+<h3 id="h-9">拿到智谱 API Key</h3>
+<p>课程的默认可跑通示例用智谱（国内直连，有免费模型）。打开 <a href="https://open.bigmodel.cn" target="_blank" rel="noopener">智谱开放平台</a>，注册登录后在控制台「API Keys」页面新建一个 Key，复制下来。它长得类似 <code>abc123.def456</code> 这样的一串。</p>
+<p>在项目根目录新建 <code>.env</code> 文件，把 Key 和三个配置写进去：</p>
+<pre class="code"><code class="lang-bash">LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+LLM_API_KEY=粘贴你的Key
+LLM_MODEL=glm-4.7-flash
+EMBEDDING_MODEL=embedding-3</code></pre>
+<p>四个配置的意思：<code>LLM_BASE_URL</code> 是智谱的 OpenAI 兼容接口地址；<code>LLM_API_KEY</code> 是你的身份凭证；<code>LLM_MODEL</code> 是聊天模型，glm-4.7-flash 是智谱目前的免费档型号（2026-07-28 核验，免费但有调用频率限制）；<code>EMBEDDING_MODEL</code> 是向量化模型，本章后半段就要用它。</p>
+<p>两条安全纪律，从现在就养成：<code>.env</code> 永远不要提交进 git（在项目里建个 <code>.gitignore</code> 写上 <code>.env</code>）；Key 不要贴进代码、截图或聊天里，泄露了立刻去控制台吊销重建。</p>
+<h3 id="h-10">用别家供应商？只改配置</h3>
+<p>用 OpenAI 或本地部署的同学，代码一行不用动，改 <code>.env</code> 就行：</p>
+<table><thead><tr><th>供应商</th><th>LLM_BASE_URL</th><th>聊天模型示例</th><th>Embedding 模型示例</th></tr></thead><tbody><tr><td>智谱（课程默认）</td><td><code>https://open.bigmodel.cn/api/paas/v4</code></td><td><code>glm-4.7-flash</code></td><td><code>embedding-3</code></td></tr><tr><td>OpenAI</td><td>不填（SDK 默认）或官方地址</td><td><code>gpt-4o-mini</code></td><td><code>text-embedding-3-small</code></td></tr><tr><td>本地 Ollama</td><td><code>http://localhost:11434/v1</code></td><td>本地模型名</td><td>本地 Embedding 模型名</td></tr></tbody></table>
+<p>OpenAI 的 Key 在 platform.openai.com 申请；Ollama 的本地部署方式第 3 章讲 Embedding 选型时会展开。还有一个容易踩的坑提前说：各家供应商的产品线并不对称，比如 DeepSeek 的聊天模型很强，但截至 2026-07 核验它没有提供 Embedding 接口。所以真实项目里「聊天用 A 家、Embedding 用 B 家」的混搭非常常见，本课的四个配置项分开设计，就是为了支持这种混搭。后面的正文以智谱为准，遇到差异处会提示。</p>
+<h3 id="h-11">跑通第一次模型调用</h3>
+<p>新建 <code>hello.ts</code>：</p>
+<pre class="code"><code class="lang-ts">import &quot;dotenv/config&quot;;              // 加载 .env 里的配置到 process.env
+import OpenAI from &quot;openai&quot;;
+
+const client = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  baseURL: process.env.LLM_BASE_URL, // 指向智谱的兼容接口
+});
+
+const response = await client.chat.completions.create({
+  model: process.env.LLM_MODEL!,
+  messages: [{ role: &quot;user&quot;, content: &quot;用一句话介绍你自己&quot; }],
+});
+
+console.log(response.choices[0].message.content);</code></pre>
+<p>运行：</p>
+<pre class="code"><code class="lang-bash">npx tsx hello.ts</code></pre>
+<p>几秒后终端里出现模型的自我介绍，环境就齐了。报错了别慌，对照这张表排：</p>
+<table><thead><tr><th>报错</th><th>可能原因</th><th>处理</th></tr></thead><tbody><tr><td>401 Unauthorized</td><td>Key 粘贴不完整、多了空格，或 Key 已吊销</td><td>重新复制 Key，检查 <code>.env</code> 无多余空格</td></tr><tr><td>429 / 1302</td><td>触发免费档频率限制</td><td>等几十秒重试；连续触发就降低调用频率</td></tr><tr><td>网络超时 / ENOTFOUND</td><td>baseURL 抄错，或网络代理拦截</td><td>对照上文表格逐字符核对 baseURL</td></tr><tr><td><code>Cannot find module</code></td><td>依赖没装上，或运行目录不对</td><td>确认在项目根目录执行过 <code>npm install</code></td></tr><tr><td><code>process.env.LLM_MODEL</code> 是 undefined</td><td><code>.env</code> 文件名不对或不在项目根目录</td><td>文件名必须是 <code>.env</code>，和 <code>package.json</code> 同级</td></tr></tbody></table>
+<p>排错时一次只改一个变量，改完重跑，这是后面所有章节的默认纪律。</p>
+<p>到这里你的项目目录长这样，后面每章往里加文件：</p>
+<pre class="code"><code class="lang-text">rag-course/
+├── .env              # 密钥与供应商配置（不进 git）
+├── .gitignore
+├── package.json      # 含 &quot;type&quot;: &quot;module&quot;
+├── node_modules/
+└── hello.ts          # 第一次模型调用</code></pre>
+<p>顺带解释一句 <code>npx tsx hello.ts</code> 干了什么：Node 本身只认识 JavaScript，<code>tsx</code> 这个工具在运行前把 TypeScript 实时转成 JavaScript，省去了手动编译的步骤。学习阶段用它最省事；生产项目才会走「<code>tsc</code> 编译 → 运行产物」的完整流程，实战模块会讲到。</p>
+<h2 id="h-12">最小 RAG：手写一遍全流程</h2>
+<p>环境就绪，开始搭本章的主角。我们将写大约 60 行代码，完整走一遍索引期和查询期。</p>
+<p>先说明一个刻意的设计：本章和第 3 到 5 章，我们不用任何 RAG 框架，全部手写。市面上确实有现成框架能三行代码拼出一条 RAG 链，但框架把每个部件都封装起来之后，你就只剩「会调」，没有「懂」了。这门课的思路是反过来的：先亲手把每个部件写一遍，知道它里面是什么，以后用不用框架、用哪个框架，都是你的自由选择。</p>
+<h3 id="h-13">准备五篇小文档</h3>
+<p>新建 <code>rag-mini.ts</code>。先准备五段「公司制度」当语料，每段一两句话，覆盖不同主题：</p>
+<pre class="code"><code class="lang-ts">const documents = [
+  &quot;员工因公发生的费用，应在费用发生后 30 天内提交报销申请，逾期不予受理。&quot;,
+  &quot;出差住宿标准：一线城市每晚不超过 500 元，其他城市每晚不超过 350 元。&quot;,
+  &quot;年假按工龄计算：入职满一年 5 天，满五年 10 天，满十年 15 天。&quot;,
+  &quot;加班需提前在 OA 系统申请，经直属主管批准后生效，加班费按小时工资的 1.5 倍计算。&quot;,
+  &quot;办公设备损坏应第一时间联系行政部报修，私自拆修造成的损坏由个人承担。&quot;,
+];</code></pre>
+<p>真实系统里这些是从文件加载的（组件①），学习阶段直接写在代码里，把精力留给主线。</p>
+<h3 id="h-14">索引期：向量化，存进内存</h3>
+<p>接下来是组件③和④。调用 Embedding 接口，把每段文档转成向量，存进一个数组——用内存数组当「向量库」，这就是最简形态。下面是到目前为止 <code>rag-mini.ts</code> 的完整样子（<code>documents</code> 不用重复粘贴，就是刚才那五段）：</p>
+<pre class="code"><code class="lang-ts">import &quot;dotenv/config&quot;;
+import OpenAI from &quot;openai&quot;;
+
+const client = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  baseURL: process.env.LLM_BASE_URL,
+});
+
+const documents = [
+  &quot;员工因公发生的费用，应在费用发生后 30 天内提交报销申请，逾期不予受理。&quot;,
+  &quot;出差住宿标准：一线城市每晚不超过 500 元，其他城市每晚不超过 350 元。&quot;,
+  &quot;年假按工龄计算：入职满一年 5 天，满五年 10 天，满十年 15 天。&quot;,
+  &quot;加班需提前在 OA 系统申请，经直属主管批准后生效，加班费按小时工资的 1.5 倍计算。&quot;,
+  &quot;办公设备损坏应第一时间联系行政部报修，私自拆修造成的损坏由个人承担。&quot;,
+];
+
+// 组件③：调用 Embedding 接口，把一批文本转成向量
+const embedResponse = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: documents,
+});
+
+// 组件④：向量和原文对应着存起来（内存版向量库）
+const store = embedResponse.data.map((item, i) =&gt; ({
+  text: documents[i],
+  vector: item.embedding,
+}));
+
+console.log(`已索引 ${store.length} 篇文档，每篇向量 ${store[0].vector.length} 维`);</code></pre>
+<p>运行到这里，每段文档已经变成了一串几百上千维的数字（智谱 embedding-3 默认 2048 维）。向量是什么、为什么能表示语义，第 3 章会讲透；现在只需要接受一个设定：<strong>语义相近的文本，算出来的向量距离也相近</strong>。</p>
+<p>注意一个容易被忽略的细节：我们把五篇文档放进一个数组，一次请求就完成了全部向量化。Embedding 接口天然支持批量，一次调用处理几十上百段文本，比一段一次调用快得多，也省得频繁触发频率限制。文档量大的时候必须分批（比如每批 64 段），这个技巧第 13 章写导入流水线时会用到。</p>
+<h3 id="h-15">查询期：检索、组装、生成</h3>
+<p>查询期先要做「组件⑤的检索半段」：把问题也转成向量，然后算出它和每个文档向量的距离，取最近的几篇。算距离用余弦相似度，先把函数写出来（公式看不懂没关系，第 3 章会亲手推一遍）：</p>
+<pre class="code"><code class="lang-ts">// 余弦相似度：取值 -1 到 1，越接近 1 语义越相近
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i &lt; a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+const question = &quot;出差住酒店一晚最多能报销多少？&quot;;
+
+// 问题也转成向量
+const qEmbed = await client.embeddings.create({
+  model: process.env.EMBEDDING_MODEL!,
+  input: question,
+});
+const qVector = qEmbed.data[0].embedding;
+
+// 和每篇文档算相似度，按从高到低排序，取前 2 名
+const ranked = store
+  .map((doc) =&gt; ({ ...doc, score: cosineSimilarity(qVector, doc.vector) }))
+  .sort((x, y) =&gt; y.score - x.score);
+
+const topChunks = ranked.slice(0, 2);
+topChunks.forEach((c) =&gt; console.log(`相似度 ${c.score.toFixed(3)} | ${c.text}`));</code></pre>
+<p>注意问题里没有一个字和文档原文重合——「住酒店」对「住宿」、「最多能报销多少」对「不超过 500 元」。关键词检索在这里会抓瞎，而待会你会看到，相似度排第一的大概率正是住宿标准那一条。这就是语义检索的魔力，先体验，第 3 章解释。</p>
+<p>最后是「生成半段」：把检索到的块和问题组装成 Prompt，调聊天模型：</p>
+<pre class="code"><code class="lang-ts">// 把检索结果拼进 Prompt（这就是第 1 章说的「注入知识」，只不过知识是检索来的）
+const context = topChunks.map((c) =&gt; c.text).join(&quot;\n&quot;);
+
+const answer = await client.chat.completions.create({
+  model: process.env.LLM_MODEL!,
+  messages: [
+    {
+      role: &quot;system&quot;,
+      content: &quot;你是公司行政助手。仅根据给定资料回答问题，资料中没有的信息就说不知道。&quot;,
+    },
+    {
+      role: &quot;user&quot;,
+      content: `【资料】\n${context}\n\n【问题】\n${question}`,
+    },
+  ],
+});
+
+console.log(&quot;\n回答：&quot;, answer.choices[0].message.content);</code></pre>
+<p>完整运行 <code>npx tsx rag-mini.ts</code>，你会先看到两段检索结果和它们的相似度分数，然后看到模型基于资料给出的回答，大意是「一线城市不超过 500 元，其他城市不超过 350 元」。端到端通了：加载、分块（这里一段就是一块）、向量化、存储、检索、组装、生成，一个不缺。</p>
+<h3 id="h-16">观察实验：问一个资料里没有的问题</h3>
+<p>现在做本章最重要的一个实验。把问题换成：</p>
+<pre class="code"><code class="lang-ts">const question = &quot;公司每年组织几次团建？&quot;;</code></pre>
+<p>制度五条里根本没有团建，跑一遍，观察两件事。</p>
+<p>第一，看相似度分数。排第一的分数会明显低于上一个问题——检索器「觉得」哪条都不太相关，但它还是会交出排名前二的结果。排序组件只负责排队，不负责判断「这队里有没有能用的」。这个责任空缺，第 8 章（重排序阈值）和第 9 章（拒答策略）会补上。</p>
+<p>第二，看模型的表现。因为我们 system 里写了「资料中没有就说不知道」，它大概率会老实拒答。你可以把那句约束删掉再跑一次，对比它会不会开始编造团建安排。这个对比能让你对「Prompt 约束」和「幻觉」的关系建立肌肉记忆。</p>
+<h3 id="h-17">再加一个实验：跨两个主题的问题</h3>
+<p>把问题再换成：</p>
+<pre class="code"><code class="lang-ts">const question = &quot;年假怎么算，加班费又是多少倍？&quot;;</code></pre>
+<p>这个问题同时涉及两条制度。跑之前先预测：检索出的前两名会是哪两条？然后跑一遍验证。你会看到年假和加班两段一起进入 Prompt，模型把两部分信息组织进同一个回答。这个实验想让你看到：TopK 取 2 不是随便定的——检索块的个数决定了模型能看到多少「证据」，取太少可能漏掉一半答案，取太多又会带进噪声。取几个、怎么取，第 8、9 章会认真讨论。</p>
+<h2 id="h-18">这个玩具和工业系统的差距</h2>
+<p>你刚刚手写的东西有个正式名字：<strong>Naive RAG（朴素 RAG）</strong>。它是所有 RAG 系统的原型，但和能扛真实业务的系统之间还差着一串升级，每一项都对应后面的章节：</p>
+<table><thead><tr><th>玩具版的做法</th><th>工业版的做法</th><th>对应章节</th></tr></thead><tbody><tr><td>文档写死在代码里</td><td>多格式文件加载与解析</td><td>第 13 章</td></tr><tr><td>一段话就是一块</td><td>讲究的分块策略</td><td>第 4 章</td></tr><tr><td>内存数组存向量</td><td>PostgreSQL + pgvector</td><td>第 5 章</td></tr><tr><td>全量遍历算相似度</td><td>ANN 索引毫秒级召回</td><td>第 3、5 章</td></tr><tr><td>用户问啥就检索啥</td><td>查询改写、多轮指代消解</td><td>第 6 章</td></tr><tr><td>只有向量一路检索</td><td>向量 + BM25 混合检索</td><td>第 7 章</td></tr><tr><td>检索到就直接用</td><td>重排序精排、阈值拒答</td><td>第 8、9 章</td></tr><tr><td>跑通就算完</td><td>用指标评估、持续迭代</td><td>第 10 章</td></tr></tbody></table>
+<p>这张表建议你收藏。后面每学完一章，回来划掉一行，进度感会非常实在。</p>
+<h2 id="h-19">小结与自测</h2>
+<p>本章你把 RAG 从概念变成了手上能跑的东西：理解了索引期和查询期为什么要分离（贵的预处理挪出问答关键路径），认识了五个核心组件（加载、分块、向量化、向量库、检索生成），搭好了 TypeScript + openai SDK + 智谱的开发环境，并手写了一条 Naive RAG 链路，还亲眼看到了它在「资料外问题」上的两种典型表现。</p>
+<p>自测一下：</p>
+<ol><li>索引期的四个步骤各自解决什么问题？如果把「向量化」从索引期挪到查询期（每次提问时现场给所有文档算向量），会发生什么？</li><li>实验里「团建」问题的相似度分数为什么明显更低？检索器为什么还是返回了结果？</li><li>删掉 system 里的拒答约束后模型可能开始编造，这说明了第 1 章哪个概念？</li><li>「年假和加班费」那个实验里，如果把 TopK 从 2 改成 1，会发生什么？这暴露了 TopK 选择的什么矛盾？</li><li>对照「玩具 vs 工业」对照表，你认为哪一行对答案质量的影响最大？带着你的答案往后学，学完模块二再回来看。</li></ol>
+<p>下一章啃最硬的一块骨头：Embedding。为什么文字变成数字就能算语义？余弦相似度到底在算什么？百万级数据怎么做到毫秒检索？搞懂这些，你才算真正摸到了 RAG 的命门。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="01-what-is-rag.html">← 第 1 章</a></span>
+    <span><a href="03-embedding-semantic-search.html">第 3 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

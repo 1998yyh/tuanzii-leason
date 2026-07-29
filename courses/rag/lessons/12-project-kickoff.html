@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>项目导览：需求、架构与工程初始化 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">我们要做什么</a></li><li><a href="#h-3">先走一遍完整旅程</a></li><li><a href="#h-4">架构总览与选型决策</a></li><li><a href="#h-5">分层约定：每一层只管自己的事</a></li><li><a href="#h-6">数据模型：四张表</a></li><li><a href="#h-7">工程初始化实操</a></li><li><a href="#h-8">数据库迁移：以及一个必须最先创建的扩展</a></li><li><a href="#h-9">后端最小启动与健康检查</a></li><li><a href="#h-10">前端空壳与代理联通</a></li><li><a href="#h-11">启动时的维度校验</a></li><li><a href="#h-12">里程碑 0 验收清单</a></li><li><a href="#h-13">小结与预告</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 12 章 项目导览：需求、架构与工程初始化</h1>
+<blockquote><p>一句话总结：读懂个人笔记助手的需求与架构决策，搭好四表数据模型和可运行的全栈骨架，前后端联通。</p></blockquote>
+<h2 id="h-2">我们要做什么</h2>
+<p>模块三只有一件事：把前十一章学到的东西，变成一个真能跑的产品。先把它当真实项目对待——从需求开始。</p>
+<p><strong>产品：个人笔记助手。</strong> 你手里有一堆 Markdown 笔记、PDF 资料、TXT 摘录，想不起某条知识记在哪了，只能挨个文件翻。这个产品让你把文档灌进去，然后用自然语言提问，系统基于你自己的文档回答，还告诉你答案出自哪里。</p>
+<p>核心功能四个，一个不多：</p>
+<table><thead><tr><th>功能</th><th>描述</th><th>验收标准</th></tr></thead><tbody><tr><td>F1 多格式文档导入</td><td>上传 Markdown / PDF / TXT，单文件 ≤ 10MB，自动进入处理流水线</td><td>三种格式各传一份，状态变为「就绪」</td></tr><tr><td>F2 文档管理</td><td>文档列表（名称、格式、状态、时间）、删除（级联清理分块向量）</td><td>删除后检索不再命中该文档</td></tr><tr><td>F3 语义检索问答</td><td>提问 → 检索 → 流式回答，答案标注引用编号，可点击看原文</td><td>事实性问题答得对，流式逐字出现，引用能定位原文</td></tr><tr><td>F4 对话历史管理</td><td>多会话列表、历史持久化、多轮追问（指代消解）、库外问题拒答</td><td>刷新页面历史还在；「那它呢」类追问正确</td></tr></tbody></table>
+<p>同样重要的是<strong>不做什么</strong>：不做多用户和登录（单用户本地应用）、不做笔记在线编辑（它是只读知识库加问答，不是笔记软件）、不做移动端适配（桌面 Web 优先）、不做混合检索和重排（第 16 章评估后再决定加不加——这是第 10 章的纪律，不是偷懒）。</p>
+<p>范围刻意收敛，因为教学目标是在五章内交付<strong>完整闭环</strong>而不是功能大全。每一行代码你都要写、都要懂。</p>
+<h2 id="h-3">先走一遍完整旅程</h2>
+<p>动手之前，看看终点长什么样。五章之后，你将能在浏览器里走完这条路：</p>
+<div class="mermaid">flowchart LR
+  U[&quot;拖一份 PDF 进文档库&quot;] --&gt; S[&quot;状态标签：处理中 → 就绪&quot;]
+  S --&gt; Q[&quot;对话页提问：&lt;br/&gt;「这份资料的核心结论是什么」&quot;]
+  Q --&gt; A[&quot;答案逐字流出&lt;br/&gt;句末带 [1] [2] 角标&quot;]
+  A --&gt; C[&quot;点击 [1]&lt;br/&gt;弹出原文片段与出处&quot;]
+  Q2[&quot;追问「那它建议怎么做呢」&quot;] --&gt; A2[&quot;系统理解「它」指什么&lt;br/&gt;继续带引用回答&quot;]</div>
+<p>每一步都对应前面章节的一项技术：状态流转是第 13 章的异步流水线，「逐字流出」是第 9 章的 SSE，角标是第 4 章埋的元数据加第 9 章的引用机制，指代消解是第 6 章的查询改写。这个项目没有一处是魔法。</p>
+<h2 id="h-4">架构总览与选型决策</h2>
+<div class="mermaid">flowchart LR
+  subgraph FE[&quot;前端 Vue 3（浏览器）&quot;]
+    UI[&quot;文档库页 / 对话页&quot;]
+  end
+  subgraph BE[&quot;后端 Express（Node.js）&quot;]
+    RT[&quot;routes&lt;br/&gt;HTTP 接口层&quot;]
+    SV[&quot;services&lt;br/&gt;业务逻辑（导入流水线、问答链路）&quot;]
+    RP[&quot;repositories&lt;br/&gt;数据访问&quot;]
+  end
+  DB[(&quot;PostgreSQL 16&lt;br/&gt;+ pgvector&quot;)]
+  LLM[&quot;LLM / Embedding 供应商&lt;br/&gt;（智谱 / OpenAI / 本地 Ollama）&quot;]
+  UI -- &quot;HTTP / SSE&quot; --&gt; RT
+  RT --&gt; SV --&gt; RP --&gt; DB
+  SV --&gt; LLM</div>
+<p>四个关键决策，每个都有明确理由：</p>
+<p><strong>后端 Express + TypeScript。</strong> 和前十一章示例同一语言，你的实验代码（分块器、BM25、改写器）可以直接搬进项目，零翻译成本。Express 是最广为熟悉的 Node Web 框架，中间件模型直观，教程资料遍地都是；Fastify、Hono 是同类替代，学会一个换谁都不难。版本基线：Express 5.2.1（2026-07-29 实测）。</p>
+<p><strong>数据库 PostgreSQL + pgvector。</strong> 第 5 章已经论证过：文档、块、会话、消息这些业务数据和向量放同一个库，删文档级联删向量是一个外键的事，元数据过滤就是普通 WHERE。个人量级（十万块以内）性能完全够。</p>
+<p><strong>供应商可插拔。</strong> 所有模型调用走 OpenAI 兼容协议，配置三件套（BASE_URL + API_KEY + MODEL）决定供应商——第 2 章的环境变量设计原样搬进项目。智谱是默认（国内直连、有免费档），换 OpenAI 或本地 Ollama 只改 <code>.env</code>。</p>
+<p><strong>不用 LangChain 等编排框架。</strong> 这是刻意决策。框架三行代码能拼出 RAG 链，但每个部件都被封装起来，你就只剩「会调」没有「懂」。本课的每个部件（分块、检索、改写、组装）都是你亲手写的——写完这个项目，框架对你来说将只是「可选的便利」，而不是「必需的黑箱」。</p>
+<h2 id="h-5">分层约定：每一层只管自己的事</h2>
+<p>后端代码按职责分五层，目录即架构：</p>
+<pre class="code"><code class="lang-text">backend/src/
+├── core/           # 基础设施：config（环境变量）、db（连接池）、llm（模型客户端）
+├── models/         # 数据模型：Drizzle schema（四张表）
+├── repositories/   # 数据访问：CRUD + 向量检索 SQL，只跟数据库打交道
+├── services/       # 业务逻辑：ingest（导入流水线）、chat（问答链路），不直接碰 SQL
+├── parsers/        # 文档解析器：md / pdf / txt 三个实现 + 统一接口
+└── routes/         # HTTP 接口层：参数校验、调 service、返回响应</code></pre>
+<p>分层不是仪式感，它管的是<strong>依赖方向</strong>：routes 可以调 services，services 可以调 repositories，反过来一律不行。两条具体纪律：service 里不允许出现 SQL（数据访问全走 repository）；route 里不允许出现业务判断（它只负责 HTTP 世界的翻译）。这样做的好处第 13 章会切身感受到：解析器、分块器这些纯逻辑可以脱离 HTTP 单独测试，换数据库时业务代码一行不动。</p>
+<h2 id="h-6">数据模型：四张表</h2>
+<p>先看关系，再看代码：</p>
+<div class="mermaid">erDiagram
+  documents ||--o{ chunks : &quot;级联删除&quot;
+  conversations ||--o{ messages : &quot;级联删除&quot;
+  documents {
+    bigint id PK
+    text filename
+    text format
+    text status
+    text error_msg
+  }
+  chunks {
+    bigint id PK
+    int document_id FK
+    int seq
+    text heading
+    text content
+    vector embedding
+  }
+  conversations {
+    bigint id PK
+    text title
+  }
+  messages {
+    bigint id PK
+    int conversation_id FK
+    text role
+    text content
+    jsonb citations
+  }</div>
+<p>设计要点四个。<code>documents.status</code> 是状态机：<code>pending → processing → ready / failed</code>，上传即返回、后台慢慢处理，第 13 章的主角。<code>chunks</code> 挂 <code>document_id</code> 外键并带 <code>onDelete: cascade</code>，删文档时块和向量跟着消失——F2 的「级联清理」在数据库层面就解决了。<code>messages.citations</code> 用 <code>jsonb</code> 存引用的 chunk id 列表，结构灵活（以后想加 snippet 快照也不用改表）。<code>chunks.embedding</code> 是 <code>vector(1024)</code>，维度必须和你的 Embedding 模型一致。</p>
+<p>完整 schema（<code>backend/src/models/schema.ts</code>），逐字段对照上面的图读：</p>
+<pre class="code"><code class="lang-ts">import { pgTable, bigserial, text, integer, vector, timestamp, jsonb, pgEnum } from &quot;drizzle-orm/pg-core&quot;;
+
+// 文档处理状态机：pending → processing → ready / failed
+export const docStatus = pgEnum(&quot;doc_status&quot;, [&quot;pending&quot;, &quot;processing&quot;, &quot;ready&quot;, &quot;failed&quot;]);
+
+export const documents = pgTable(&quot;documents&quot;, {
+  id: bigserial(&quot;id&quot;, { mode: &quot;number&quot; }).primaryKey(),
+  filename: text(&quot;filename&quot;).notNull(),
+  format: text(&quot;format&quot;).notNull(),          // md | pdf | txt
+  sizeBytes: integer(&quot;size_bytes&quot;).notNull(),
+  status: docStatus(&quot;status&quot;).notNull().default(&quot;pending&quot;),
+  errorMsg: text(&quot;error_msg&quot;),
+  createdAt: timestamp(&quot;created_at&quot;).notNull().defaultNow(),
+  updatedAt: timestamp(&quot;updated_at&quot;).notNull().defaultNow(),
+});
+
+export const chunks = pgTable(&quot;chunks&quot;, {
+  id: bigserial(&quot;id&quot;, { mode: &quot;number&quot; }).primaryKey(),
+  // 级联删除：删文档时它的块跟着消失，这是把向量和业务数据放同库的红利
+  documentId: integer(&quot;document_id&quot;).notNull().references(() =&gt; documents.id, { onDelete: &quot;cascade&quot; }),
+  seq: integer(&quot;seq&quot;).notNull(),              // 第几块（顺序）
+  heading: text(&quot;heading&quot;),                   // 所属标题（结构化切分记下）
+  content: text(&quot;content&quot;).notNull(),
+  tokenCount: integer(&quot;token_count&quot;).notNull().default(0),
+  embedding: vector(&quot;embedding&quot;, { dimensions: 1024 }), // 维度必须和 EMBEDDING_DIM 一致
+});
+
+export const conversations = pgTable(&quot;conversations&quot;, {
+  id: bigserial(&quot;id&quot;, { mode: &quot;number&quot; }).primaryKey(),
+  title: text(&quot;title&quot;).notNull().default(&quot;新对话&quot;),
+  createdAt: timestamp(&quot;created_at&quot;).notNull().defaultNow(),
+  updatedAt: timestamp(&quot;updated_at&quot;).notNull().defaultNow(),
+});
+
+export const messages = pgTable(&quot;messages&quot;, {
+  id: bigserial(&quot;id&quot;, { mode: &quot;number&quot; }).primaryKey(),
+  conversationId: integer(&quot;conversation_id&quot;).notNull().references(() =&gt; conversations.id, { onDelete: &quot;cascade&quot; }),
+  role: text(&quot;role&quot;).notNull(),               // user | assistant
+  content: text(&quot;content&quot;).notNull(),
+  citations: jsonb(&quot;citations&quot;),              // 引用的 chunk id 列表
+  createdAt: timestamp(&quot;created_at&quot;).notNull().defaultNow(),
+});</code></pre>
+<p>Drizzle 的写法基本就是「TypeScript 版的 SQL DDL」：<code>pgTable</code> 对 CREATE TABLE，<code>references</code> 对外键，<code>defaultNow()</code> 对 DEFAULT now()。它给你类型安全（<code>documents.id</code> 是 number，写错类型编译期就炸），又不遮挡 SQL 本身的样子——这是选它而不是更重 ORM 的原因。</p>
+<h2 id="h-7">工程初始化实操</h2>
+<p>理论讲完，开搭。先建仓库结构：</p>
+<pre class="code"><code class="lang-bash">mkdir -p notesmind/backend/src/{core,models,repositories,services,parsers,routes}
+mkdir -p notesmind/frontend
+cd notesmind/backend
+npm init -y</code></pre>
+<p>把 <code>package.json</code> 里加 <code>&quot;type&quot;: &quot;module&quot;</code>，然后装依赖。这里记一下本课核验过的版本（2026-07-29 实测安装），新版本大概率兼容，遇到诡异报错先对版本：</p>
+<pre class="code"><code class="lang-bash"># 运行时依赖：express 5.2.1、pg 8.22.0、drizzle-orm 0.45.2
+npm install express pg drizzle-orm dotenv
+# 开发依赖：drizzle-kit 0.31.10
+npm install -D tsx typescript drizzle-kit @types/express @types/pg</code></pre>
+<p>四个运行时依赖的分工：<code>express</code> 是 Web 框架；<code>pg</code> 是 PostgreSQL 官方 Node 驱动（第 5 章见过）；<code>drizzle-orm</code> 是 ORM；<code>dotenv</code> 读 <code>.env</code>。<code>drizzle-kit</code> 是迁移工具，只活在开发期。</p>
+<p>配置 <code>.env</code>（键名和第 2 章完全同源，加了一个数据库地址）：</p>
+<pre class="code"><code class="lang-bash">DATABASE_URL=postgres://postgres:rag123@localhost:5432/notesmind
+LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+LLM_API_KEY=填你的Key
+LLM_MODEL=glm-4.7-flash
+EMBEDDING_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+EMBEDDING_API_KEY=填你的Key
+EMBEDDING_MODEL=embedding-3
+EMBEDDING_DIM=1024</code></pre>
+<p>数据库还是第 5 章那个 Docker 容器（没起的话 <code>docker start rag-pg</code>），新建一个项目专用库：</p>
+<pre class="code"><code class="lang-bash">docker exec -i rag-pg psql -U postgres -c &quot;CREATE DATABASE notesmind;&quot;</code></pre>
+<p>然后是 core 层的两个文件。<code>src/core/config.ts</code> 集中读取环境变量，缺了立刻炸——配置错误要在启动时暴露，不要拖到第一个请求：</p>
+<pre class="code"><code class="lang-ts">import &quot;dotenv/config&quot;;
+
+// 启动时集中读取并校验环境变量，缺了立刻报错，不让请求期才发现
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`缺少环境变量 ${name}，请检查 .env`);
+  return value;
+}
+
+export const config = {
+  port: Number(process.env.PORT ?? 8000),
+  databaseUrl: required(&quot;DATABASE_URL&quot;),
+  llm: {
+    baseUrl: required(&quot;LLM_BASE_URL&quot;),
+    apiKey: required(&quot;LLM_API_KEY&quot;),
+    model: required(&quot;LLM_MODEL&quot;),
+  },
+  embedding: {
+    baseUrl: required(&quot;EMBEDDING_BASE_URL&quot;),
+    apiKey: required(&quot;EMBEDDING_API_KEY&quot;),
+    model: required(&quot;EMBEDDING_MODEL&quot;),
+    dim: Number(required(&quot;EMBEDDING_DIM&quot;)),
+  },
+} as const;</code></pre>
+<p><code>src/core/db.ts</code> 建全局唯一的连接池（复习第 5 章：连接是贵重资源，池化复用）：</p>
+<pre class="code"><code class="lang-ts">import pg from &quot;pg&quot;;
+import { drizzle } from &quot;drizzle-orm/node-postgres&quot;;
+import { config } from &quot;./config.js&quot;;
+
+// 全局共享一个连接池：连接是贵重资源，池化复用是后端标配
+export const pool = new pg.Pool({ connectionString: config.databaseUrl });
+export const db = drizzle(pool);</code></pre>
+<h2 id="h-8">数据库迁移：以及一个必须最先创建的扩展</h2>
+<p>schema 写好了，让 drizzle-kit 把它变成迁移 SQL：</p>
+<pre class="code"><code class="lang-bash">npx drizzle-kit generate</code></pre>
+<p>它读 <code>drizzle.config.ts</code>（下面给出）和 schema，在 <code>drizzle/</code> 目录生成一份 SQL 文件：</p>
+<pre class="code"><code class="lang-ts">import { defineConfig } from &quot;drizzle-kit&quot;;
+
+export default defineConfig({
+  dialect: &quot;postgresql&quot;,
+  schema: &quot;./src/models/schema.ts&quot;,
+  out: &quot;./drizzle&quot;,
+  dbCredentials: { url: process.env.DATABASE_URL! },
+});</code></pre>
+<p>打开生成的 SQL，四张表和一个 enum 都在，但<strong>少了两样 pgvector 特有的东西</strong>：<code>CREATE EXTENSION vector</code> 和 HNSW 索引——ORM 不管数据库扩展和索引，这是常态，得手写。编辑生成的 SQL 文件，<strong>在文件最开头</strong>加扩展，在<strong>最末尾</strong>加索引：</p>
+<pre class="code"><code class="lang-sql">-- 文件最开头（必须在所有 CREATE TABLE 之前）：
+CREATE EXTENSION IF NOT EXISTS vector;
+--&gt; statement-breakpoint
+
+-- ……（drizzle 生成的建表语句）……
+
+-- 文件最末尾追加：
+--&gt; statement-breakpoint
+CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops);</code></pre>
+<p>为什么反复强调「最开头」？因为这个顺序是实测踩出来的：<code>CREATE EXTENSION</code> 写在文件末尾时，迁移执行到 <code>CREATE TABLE chunks（含 vector(1024) 列）</code>直接报错——<code>vector</code> 类型还不存在。扩展是类型的来源，必须先于任何使用它的地方。这个坑你大概率也会踩，踩了回来对这句报错：<code>Failed query: CREATE TABLE &quot;chunks&quot; ... &quot;embedding&quot; vector(1024)</code>。</p>
+<p>执行迁移：</p>
+<pre class="code"><code class="lang-bash">npx drizzle-kit migrate</code></pre>
+<p>验证（应该看到四张表和两个索引）：</p>
+<pre class="code"><code class="lang-bash">docker exec -i rag-pg psql -U postgres -d notesmind -c &quot;\dt&quot;
+docker exec -i rag-pg psql -U postgres -d notesmind -c &quot;SELECT indexname FROM pg_indexes WHERE tablename='chunks';&quot;</code></pre>
+<pre class="code"><code class="lang-text"> chunks | conversations | documents | messages   ← 四张表
+ chunks_pkey
+ chunks_embedding_hnsw                          ← HNSW 索引就位</code></pre>
+<h2 id="h-9">后端最小启动与健康检查</h2>
+<p>写最小的路由和入口，让服务活起来。<code>src/routes/health.ts</code>：</p>
+<pre class="code"><code class="lang-ts">import { Router } from &quot;express&quot;;
+
+export const healthRouter = Router();
+
+healthRouter.get(&quot;/health&quot;, (_req, res) =&gt; {
+  res.json({ ok: true, service: &quot;notesmind&quot;, time: new Date().toISOString() });
+});</code></pre>
+<p><code>src/index.ts</code> 装配应用：</p>
+<pre class="code"><code class="lang-ts">import express from &quot;express&quot;;
+import { config } from &quot;./core/config.js&quot;;
+import { healthRouter } from &quot;./routes/health.js&quot;;
+
+const app = express();
+app.use(express.json());
+
+app.use(&quot;/api&quot;, healthRouter);
+
+app.listen(config.port, () =&gt; {
+  console.log(`notesmind backend 已启动: http://localhost:${config.port}`);
+});</code></pre>
+<p>启动并验证（真实输出）：</p>
+<pre class="code"><code class="lang-bash">npx tsx src/index.ts</code></pre>
+<pre class="code"><code class="lang-text">notesmind backend 已启动: http://localhost:8000</code></pre>
+<pre class="code"><code class="lang-bash">curl http://localhost:8000/api/health</code></pre>
+<pre class="code"><code class="lang-json">{&quot;ok&quot;:true,&quot;service&quot;:&quot;notesmind&quot;,&quot;time&quot;:&quot;2026-07-29T03:42:47.439Z&quot;}</code></pre>
+<p>后端活了。麻雀虽小，分层是全的：route（health）→ core（config、db）→ 数据库（连接池在第一次查询时才会真正建连）。</p>
+<h2 id="h-10">前端空壳与代理联通</h2>
+<p>后端能说话了，让前端也出生。<code>frontend/</code> 目录下：</p>
+<pre class="code"><code class="lang-bash">npm init -y
+npm install vue vue-router pinia
+npm install -D vite @vitejs/plugin-vue typescript</code></pre>
+<p>版本基线：Vue 3.5.40、Vite 8.1.5（2026-07-29 实测）。四个文件撑起空壳。<code>vite.config.ts</code>（代理是重点，马上讲）：</p>
+<pre class="code"><code class="lang-ts">import { defineConfig } from &quot;vite&quot;;
+import vue from &quot;@vitejs/plugin-vue&quot;;
+
+export default defineConfig({
+  plugins: [vue()],
+  server: {
+    proxy: {
+      // 开发期把 /api 代理到后端，前端代码里不用写死后端地址
+      &quot;/api&quot;: &quot;http://localhost:8000&quot;,
+    },
+  },
+});</code></pre>
+<p><code>index.html</code> 和 <code>src/main.ts</code> 是 Vite + Vue 的标准出生证：</p>
+<pre class="code"><code class="lang-html">&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;zh-CN&quot;&gt;
+&lt;head&gt;&lt;meta charset=&quot;utf-8&quot;&gt;&lt;title&gt;个人笔记助手&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;&lt;div id=&quot;app&quot;&gt;&lt;/div&gt;&lt;script type=&quot;module&quot; src=&quot;/src/main.ts&quot;&gt;&lt;/script&gt;&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+<pre class="code"><code class="lang-ts">import { createApp } from &quot;vue&quot;;
+import App from &quot;./App.vue&quot;;
+
+createApp(App).mount(&quot;#app&quot;);</code></pre>
+<p><code>src/App.vue</code> 先只做一件事：调健康检查，把结果显示出来。</p>
+<pre class="code"><code class="lang-vue">&lt;script setup lang=&quot;ts&quot;&gt;
+import { ref, onMounted } from &quot;vue&quot;;
+
+const health = ref(&quot;正在连接后端……&quot;);
+
+onMounted(async () =&gt; {
+  try {
+    const resp = await fetch(&quot;/api/health&quot;);
+    const data = await resp.json();
+    health.value = data.ok ? `后端已连接：${data.service}` : &quot;后端异常&quot;;
+  } catch {
+    health.value = &quot;连不上后端，请确认它已启动&quot;;
+  }
+});
+&lt;/script&gt;
+
+&lt;template&gt;
+  &lt;h1&gt;个人笔记助手&lt;/h1&gt;
+  &lt;p&gt;{{ health }}&lt;/p&gt;
+&lt;/template&gt;</code></pre>
+<p>起两个服务（后端 <code>npx tsx src/index.ts</code>，前端 <code>npx vite</code>），浏览器打开 <code>http://localhost:5173</code>，看到「后端已连接：notesmind」，前后端正式联通。也可以直接用 curl 验证代理生效（实测）：</p>
+<pre class="code"><code class="lang-bash">curl http://localhost:5173/api/health
+# {&quot;ok&quot;:true,&quot;service&quot;:&quot;notesmind&quot;,...}  ← 经 Vite 代理拿到了后端的响应</code></pre>
+<p><strong>为什么用代理而不是 CORS？</strong> 浏览器有个安全规矩：页面向「别的源」（端口不同就算）发请求，默认被拦，除非后端显式配置 CORS 放行。开发期两条路：后端开 CORS，或让 Vite 把 <code>/api</code> 开头的请求转发给后端——对浏览器来说，它访问的始终是 5173 同一个源，规矩不触发。选代理的理由：前端代码里只写 <code>/api/...</code> 不写死地址，生产部署时前后端同源（nginx 托管前端并反代后端），代码一行不改，开发到生产无缝平移。CORS 不是没用——前后端真的要分域名部署时它是正解，第 16 章会再提。</p>
+<h2 id="h-11">启动时的维度校验</h2>
+<p>第 5 章埋的事故预防，现在落地：Embedding 模型换维度、表还是旧维度，写入直接炸。在 <code>src/index.ts</code> 的 listen 之前加一道静态校验：</p>
+<pre class="code"><code class="lang-ts">// 启动防线：配置维度必须和 schema 维度一致（第 5 章的高频事故预防）
+import { config } from &quot;./core/config.js&quot;;
+
+const SCHEMA_EMBEDDING_DIM = 1024; // 与 models/schema.ts 中 vector 维度保持一致
+if (config.embedding.dim !== SCHEMA_EMBEDDING_DIM) {
+  throw new Error(
+    `EMBEDDING_DIM=${config.embedding.dim} 与数据表维度 ${SCHEMA_EMBEDDING_DIM} 不一致，` +
+    `请修改 .env 或重建数据表（换维度必须重建索引，见第 3 章）`
+  );
+}</code></pre>
+<p>静态校验只能防「配置和表不一致」。更严格的版本会在启动时真实调一次 Embedding 接口探测实际维度，但那要求启动时 API 可用——本地开发可以接受，生产上网络抖动会让服务起不来。折中方案就是把这道静态校验放在启动路径上，把 API 探测做成一个独立的管理命令。工程里很多「严格」和「可用」的权衡都长这样。</p>
+<h2 id="h-12">里程碑 0 验收清单</h2>
+<p>对照检查，全绿才算完成本章：</p>
+<ul><li>[ ] <code>docker exec -i rag-pg psql -U postgres -d notesmind -c &quot;\dt&quot;</code> 显示四张表</li><li>[ ] chunks 表上有 <code>chunks_embedding_hnsw</code> 索引</li><li>[ ] <code>curl http://localhost:8000/api/health</code> 返回 <code>{&quot;ok&quot;:true,...}</code></li><li>[ ] <code>curl http://localhost:5173/api/health</code> 经代理返回同样结果</li><li>[ ] 浏览器打开 5173 显示「后端已连接：notesmind」</li><li>[ ] 把 <code>.env</code> 里 <code>EMBEDDING_DIM</code> 改成 512 再启动后端，看到维度不一致的明确报错（验完改回来）</li></ul>
+<h2 id="h-13">小结与预告</h2>
+<p>本章你给项目打下了地基：需求边界（四个功能 + 四个不做）；四个架构决策（Express、pgvector 单库、可插拔供应商、不用框架）；五层分层约定与依赖方向；四表数据模型与级联设计；迁移的完整流程和「扩展最先建」的实测坑；前后端经 Vite 代理联通；启动时的维度防线。</p>
+<p>下一章写项目的第一条大动脉：文档导入流水线。用户拖进来一个 PDF，从格式校验、三种解析器、递归分块（第 4 章的代码要兑现 overlap 承诺了）、批量 Embedding，到状态机流转和 pgvector 入库——索引期的工业化形态。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="11-graphrag-agentic-rag.html">← 第 11 章</a></span>
+    <span><a href="13-document-ingestion.html">第 13 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

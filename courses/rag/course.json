@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "slug": "rag",
+  "title": "RAG 检索增强生成 从入门到实战进阶",
+  "subtitle": "从诞生背景到核心组件、检索策略与评估优化，再到个人笔记助手全栈实战",
+  "description": "面向 0 基础或有一定编程经验的 AI 应用开发学习者，讲清 RAG 的原理、核心组件与系统优化方法，并基于 PostgreSQL + pgvector 从零交付一个完整的个人笔记助手 RAG 应用。",
+  "duration": "约 15 小时（16 章合计）",
+  "status": "manual-review",
+  "modules": [
+    {
+      "name": "模块一 RAG 基础与核心组件",
+      "lessons": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "name": "模块二 RAG 进阶与系统优化",
+      "lessons": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "name": "模块三 个人笔记助手项目实战",
+      "lessons": [
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    }
+  ],
+  "lessons": [
+    {
+      "number": 1,
+      "title": "RAG 是什么：大模型的三大硬伤与三种解法",
+      "time": "约 40 分钟",
+      "summary": "从幻觉、时效性、私域知识三个翻车现场出发，搞懂 RAG 与 Fine-tuning、Prompt Engineering 的边界。",
+      "status": "available",
+      "href": "lessons/01-what-is-rag.html",
+      "markdown": "lessons/01-what-is-rag.md"
+    },
+    {
+      "number": 2,
+      "title": "RAG 全景：索引期与查询期两条流水线",
+      "time": "约 60 分钟",
+      "summary": "拆解 RAG 的五大组件，搭好环境跑通第一个最小 RAG 问答。",
+      "status": "available",
+      "href": "lessons/02-rag-pipeline.html",
+      "markdown": "lessons/02-rag-pipeline.md"
+    },
+    {
+      "number": 3,
+      "title": "Embedding 与语义检索：把文字变成可计算的距离",
+      "time": "约 50 分钟",
+      "summary": "搞懂稠密/稀疏向量、余弦相似度与 ANN，学会 Embedding 模型选型。",
+      "status": "available",
+      "href": "lessons/03-embedding-semantic-search.html",
+      "markdown": "lessons/03-embedding-semantic-search.md"
+    },
+    {
+      "number": 4,
+      "title": "文本分块 Chunking：切得好才能搜得准",
+      "time": "约 50 分钟",
+      "summary": "固定/递归/结构化/语义四种分块策略与 Chunk Size、Overlap 的权衡实验。",
+      "status": "available",
+      "href": "lessons/04-chunking.html",
+      "markdown": "lessons/04-chunking.md"
+    },
+    {
+      "number": 5,
+      "title": "向量数据库与 pgvector：给向量安个家",
+      "time": "约 60 分钟",
+      "summary": "向量库选型对比，PostgreSQL + pgvector 建表、相似度查询与 HNSW 索引实战。",
+      "status": "available",
+      "href": "lessons/05-vector-db-pgvector.html",
+      "markdown": "lessons/05-vector-db-pgvector.md"
+    },
+    {
+      "number": 6,
+      "title": "查询理解与改写：让用户的问题更可检索",
+      "time": "约 50 分钟",
+      "summary": "查询改写、HyDE、子查询分解，解决多轮对话指代与口语化查询的检索翻车。",
+      "status": "available",
+      "href": "lessons/06-query-rewriting.html",
+      "markdown": "lessons/06-query-rewriting.md"
+    },
+    {
+      "number": 7,
+      "title": "混合检索：BM25 + 向量的多路召回",
+      "time": "约 60 分钟",
+      "summary": "搞懂 BM25 与稀疏检索，用 RRF 融合实现向量 + 关键词的混合检索。",
+      "status": "available",
+      "href": "lessons/07-hybrid-search.html",
+      "markdown": "lessons/07-hybrid-search.md"
+    },
+    {
+      "number": 8,
+      "title": "重排序 Re-ranking：粗排之后还要精排",
+      "time": "约 50 分钟",
+      "summary": "两阶段检索架构与 Cross-Encoder 原理，bge-reranker / Cohere Rerank 实战。",
+      "status": "available",
+      "href": "lessons/08-reranking.html",
+      "markdown": "lessons/08-reranking.md"
+    },
+    {
+      "number": 9,
+      "title": "生成侧优化：Prompt 组装、引用溯源与拒答",
+      "time": "约 50 分钟",
+      "summary": "上下文组装、Token 预算、引用标注与拒答策略，让答案忠实可溯源。",
+      "status": "available",
+      "href": "lessons/09-generation-optimization.html",
+      "markdown": "lessons/09-generation-optimization.md"
+    },
+    {
+      "number": 10,
+      "title": "RAG 系统评估：没有度量就没有优化",
+      "time": "约 60 分钟",
+      "summary": "检索与生成双线指标、RAGAS 实操与 badcase 驱动迭代工作流。",
+      "status": "available",
+      "href": "lessons/10-rag-evaluation.html",
+      "markdown": "lessons/10-rag-evaluation.md"
+    },
+    {
+      "number": 11,
+      "title": "前沿形态：GraphRAG、Agentic RAG 与选型收束",
+      "time": "约 40 分钟",
+      "summary": "经典 RAG 的能力边界、两种前沿形态的思路与适用场景，以及全课选型决策树。",
+      "status": "available",
+      "href": "lessons/11-graphrag-agentic-rag.html",
+      "markdown": "lessons/11-graphrag-agentic-rag.md"
+    },
+    {
+      "number": 12,
+      "title": "项目导览：需求、架构与工程初始化",
+      "time": "约 70 分钟",
+      "summary": "解读个人笔记助手的需求与前后端技术方案，搭好可运行的全栈工程骨架。",
+      "status": "available",
+      "href": "lessons/12-project-kickoff.html",
+      "markdown": "lessons/12-project-kickoff.md"
+    },
+    {
+      "number": 13,
+      "title": "文档导入流水线：多格式解析、分块与向量化入库",
+      "time": "约 80 分钟",
+      "summary": "实现 MD/PDF/TXT 上传后的自动解析、分块、Embedding 与 pgvector 入库。",
+      "status": "available",
+      "href": "lessons/13-document-ingestion.html",
+      "markdown": "lessons/13-document-ingestion.md"
+    },
+    {
+      "number": 14,
+      "title": "问答 API：语义检索、Prompt 组装与流式问答",
+      "time": "约 80 分钟",
+      "summary": "实现带对话历史、引用溯源、拒答兜底与 SSE 流式输出的问答接口。",
+      "status": "available",
+      "href": "lessons/14-chat-api.html",
+      "markdown": "lessons/14-chat-api.md"
+    },
+    {
+      "number": 15,
+      "title": "前端实现：文档管理与问答对话界面",
+      "time": "约 80 分钟",
+      "summary": "实现文档库页与对话页，打字机流式渲染与可点击的引用溯源。",
+      "status": "available",
+      "href": "lessons/15-frontend-implementation.html",
+      "markdown": "lessons/15-frontend-implementation.md"
+    },
+    {
+      "number": 16,
+      "title": "联调、测试、部署与复盘",
+      "time": "约 60 分钟",
+      "summary": "端到端联调排错、Docker Compose 一键部署与技术决策复盘。",
+      "status": "available",
+      "href": "lessons/16-deploy-and-review.html",
+      "markdown": "lessons/16-deploy-and-review.md"
+    }
+  ]
+}

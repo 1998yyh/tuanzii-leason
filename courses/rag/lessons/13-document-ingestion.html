@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文档导入流水线：多格式解析、分块与向量化入库 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">流水线全景</a></li><li><a href="#h-3">上传接口：为什么必须异步</a></li><li><a href="#h-4">解析器：一个接口，三个实现</a></li><li><a href="#h-5">分块：兑现 overlap 承诺</a></li><li><a href="#h-6">LLM 客户端与批量 Embedding</a></li><li><a href="#h-7">流水线与状态机</a></li><li><a href="#h-8">里程碑 1 验收：三种格式全走一遍</a></li><li><a href="#h-9">常见坑位清单</a></li><li><a href="#h-10">小结与预告</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 13 章 文档导入流水线：多格式解析、分块与向量化入库</h1>
+<blockquote><p>一句话总结：实现上传后自动完成「解析 → 分块 → 向量化 → 入库」的异步流水线，三种格式全部落地，状态机全程可见。</p></blockquote>
+<h2 id="h-2">流水线全景</h2>
+<p>本章交付里程碑 1：用户上传一份文档，不用等，系统后台自动把它变成一堆可检索的向量，状态标签从「待处理」走到「就绪」。</p>
+<div class="mermaid">flowchart LR
+  U[&quot;用户上传文件&quot;] --&gt; V[&quot;格式/大小校验&lt;br/&gt;（不合格直接拒）&quot;]
+  V --&gt; S[&quot;落盘 uploads/&lt;br/&gt;建 documents 记录（pending）&quot;]
+  S --&gt; R[&quot;立即返回响应&quot;]
+  S -. &quot;setImmediate 推到后台&quot; .-&gt; P[&quot;① 解析（parser）&quot;]
+  P --&gt; C[&quot;② 分块（chunking）&quot;]
+  C --&gt; E[&quot;③ 批量 Embedding&quot;]
+  E --&gt; D[&quot;④ 入库 pgvector&quot;]
+  D --&gt; OK[&quot;status = ready&quot;]
+  P -. &quot;任一步失败&quot; .-&gt; F[&quot;status = failed&lt;br/&gt;error_msg 落库&quot;]</div>
+<p>这一章把索引期从「第 2 章的手动实验」升级为「工业流水线」。四个处理步骤你在原理章都见过，本章的新课题是工程问题：异步、状态、失败处理、格式扩展。</p>
+<h2 id="h-3">上传接口：为什么必须异步</h2>
+<p>先算时间账。一份 500KB 的 PDF，解析 1 秒、分块忽略不计、向量化 200 个块分 4 批调 API 约 8 秒——总共 10 秒上下。如果上传接口同步做完这一切，用户盯着转圈 10 秒，HTTP 超时风险、并发一上来连接全被占着。正确姿势是<strong>上传即返回，处理走后台</strong>：接口只负责收文件、建记录，几毫秒返回；重活推给后台流水线，前端靠轮询状态标签跟进进度。</p>
+<p>用 multer 处理 multipart 上传（<code>src/routes/documents.ts</code>）：</p>
+<pre class="code"><code class="lang-bash">npm install multer pdf-parse openai</code></pre>
+<pre class="code"><code class="lang-ts">import { Router } from &quot;express&quot;;
+import multer from &quot;multer&quot;;
+import { unlink } from &quot;node:fs/promises&quot;;
+import { createDocument, listDocuments, deleteDocument } from &quot;../repositories/documents.js&quot;;
+import { kickoffIngest } from &quot;../services/ingest.js&quot;;
+
+export const documentsRouter = Router();
+
+// 上传约束：10MB 上限、只收 md/pdf/txt、落盘 uploads/
+const ALLOWED = new Set([&quot;md&quot;, &quot;pdf&quot;, &quot;txt&quot;]);
+const upload = multer({
+  dest: &quot;uploads/&quot;,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+documentsRouter.post(&quot;/documents&quot;, upload.single(&quot;file&quot;), async (req, res) =&gt; {
+  if (!req.file) return res.status(400).json({ error: &quot;缺少文件字段 file&quot; });
+
+  const ext = req.file.originalname.split(&quot;.&quot;).pop()?.toLowerCase() ?? &quot;&quot;;
+  if (!ALLOWED.has(ext)) {
+    await unlink(req.file.path); // 不支持的格式，落盘的文件也要清掉
+    return res.status(400).json({ error: `不支持的格式 .${ext}，仅支持 md / pdf / txt` });
+  }
+
+  const doc = await createDocument({
+    filename: req.file.originalname,
+    format: ext,
+    sizeBytes: req.file.size,
+  });
+
+  // 上传即返回 pending，解析分块向量化推到后台流水线
+  kickoffIngest(doc.id, ext, req.file.path);
+  res.status(201).json(doc);
+});
+
+documentsRouter.get(&quot;/documents&quot;, async (_req, res) =&gt; {
+  res.json(await listDocuments());
+});
+
+documentsRouter.delete(&quot;/documents/:id&quot;, async (req, res) =&gt; {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: &quot;id 必须是整数&quot; });
+  await deleteDocument(id); // 外键级联删除 chunks
+  res.json({ ok: true });
+});</code></pre>
+<p>三个细节值得停留。第一，<code>upload.single(&quot;file&quot;)</code> 里的 <code>&quot;file&quot;</code> 是表单字段名，前端上传时要对得上（第 15 章会写）。第二，格式拒绝后那个 <code>unlink</code> 别漏——multer 先落盘才轮到你的校验逻辑，不合格的文件不删就是垃圾堆积。第三，按扩展名判断格式是务实简化（MIME 类型可以伪造），个人应用够用；更严格的场景要读文件头魔数。</p>
+<h2 id="h-4">解析器：一个接口，三个实现</h2>
+<p>第 4 章说过「PDF 的瓶颈常常在解析不在分块」。现在直面三种格式的差异，统一抽象成一个接口（<code>src/parsers/types.ts</code>）：</p>
+<pre class="code"><code class="lang-ts">// 所有解析器的统一输出：按文档自然结构切开的节 + 结构信息
+export interface ParsedDoc {
+  sections: { heading: string | null; text: string }[];
+}
+
+// 解析器统一接口：新增格式 = 新增一个实现（开闭原则）
+export interface Parser {
+  format: string;
+  parse(filePath: string): Promise&lt;ParsedDoc&gt;;
+}</code></pre>
+<p>这个接口是开闭原则的实际应用：流水线只认识 <code>Parser</code>，以后加 Word、加 HTML，新增一个实现类注册进来，流水线一行不改。<code>heading</code> 字段就是第 4 章埋的元数据伏笔——「这块属于哪个标题」，能拿到就记下，拿不到（PDF、TXT）就是 null。</p>
+<p><strong>Markdown 解析器</strong>（<code>src/parsers/markdown.ts</code>）：按标题层级切节，结构化切分的落地：</p>
+<pre class="code"><code class="lang-ts">import { readFile } from &quot;node:fs/promises&quot;;
+import type { Parser, ParsedDoc } from &quot;./types.js&quot;;
+
+// Markdown 解析：按标题层级切节，保留「这节属于哪个标题」的结构信息
+export const markdownParser: Parser = {
+  format: &quot;md&quot;,
+  async parse(filePath) {
+    const raw = await readFile(filePath, &quot;utf8&quot;);
+    const sections: ParsedDoc[&quot;sections&quot;] = [];
+    let heading: string | null = null;
+    let buffer: string[] = [];
+
+    const flush = () =&gt; {
+      const text = buffer.join(&quot;\n&quot;).trim();
+      if (text) sections.push({ heading, text });
+      buffer = [];
+    };
+
+    for (const line of raw.split(&quot;\n&quot;)) {
+      const m = line.match(/^#{1,3}\s+(.+)/); // 一到三级标题都算节边界
+      if (m) {
+        flush();
+        heading = m[1].trim();
+      } else {
+        buffer.push(line);
+      }
+    }
+    flush();
+    return { sections };
+  },
+};</code></pre>
+<p><code>flush</code> 函数是「遇边界就封节」的通用模式：遍历中行缓冲内容，遇到标题先把攒下的内容封成一节，再开新节。一到三级标题都算边界，正文前的内容归入 <code>heading: null</code> 的第一节。</p>
+<p><strong>PDF 解析器</strong>（<code>src/parsers/pdf.ts</code>）：用 pdf-parse 提取文本。版本注意：本课用的是 pdf-parse v2（2026-07-29 实测 2.4.5），API 和网上大量 v1 教程完全不同——v1 是 <code>pdf(buffer)</code> 函数调用，v2 是 <code>PDFParse</code> 类：</p>
+<pre class="code"><code class="lang-ts">import { readFile } from &quot;node:fs/promises&quot;;
+import { PDFParse } from &quot;pdf-parse&quot;;
+import type { Parser, ParsedDoc } from &quot;./types.js&quot;;
+
+// PDF 解析：pdf-parse v2 提取全文，按「连续空行」粗分节
+// 注意：PDF 没有可靠的结构信息，提取文本可能带页码、Unicode 兼容字符等噪声
+export const pdfParser: Parser = {
+  format: &quot;pdf&quot;,
+  async parse(filePath) {
+    const buf = await readFile(filePath);
+    const parser = new PDFParse({ data: buf });
+    const result = await parser.getText();
+    await parser.destroy();
+
+    const text = result.text.replace(/--\s*\d+\s*of\s*\d+\s*--/g, &quot;&quot;); // 去掉页码噪声
+    if (!text.trim()) {
+      throw new Error(&quot;PDF 未提取到文本，可能是扫描件（本系统暂不支持 OCR）&quot;);
+    }
+    const sections = text
+      .split(/\n\s*\n/)
+      .map((t) =&gt; t.trim())
+      .filter(Boolean)
+      .map((t) =&gt; ({ heading: null, text: t }));
+    return { sections };
+  },
+};</code></pre>
+<p>实测提取的文本长这样，注意里面的两种噪声：</p>
+<pre class="code"><code class="lang-text">pgvector HNSW 索引实战笔记
+HNSW 是多层图索引，查询快召回⾼。        ← 「⾼」是 Unicode 兼容字符（U+2FCF），不是常用字
+建索引⽤ vector_cosine_ops 配套余弦距离。
+
+-- 1 of 1 --                              ← 页码噪声，正则清掉</code></pre>
+<p>提取为空说明是扫描件（图片型 PDF，没有文本层），抛出明确错误——需求边界里写了不做 OCR，那就让失败原因说清楚，而不是默默入库一堆空块。Unicode 兼容字符那类噪声（字体映射导致），个人笔记场景影响有限，检索时 Embedding 模型对它们有一定容忍度；真正较真的场景要做 Unicode NFKC 归一化，第 16 章排错清单里有它的位置。</p>
+<p><strong>TXT 解析器</strong>（<code>src/parsers/txt.ts</code>）最简单，按空行分段：</p>
+<pre class="code"><code class="lang-ts">import { readFile } from &quot;node:fs/promises&quot;;
+import type { Parser, ParsedDoc } from &quot;./types.js&quot;;
+
+export const txtParser: Parser = {
+  format: &quot;txt&quot;,
+  async parse(filePath) {
+    const raw = await readFile(filePath, &quot;utf8&quot;);
+    const sections = raw
+      .split(/\n\s*\n/)
+      .map((t) =&gt; t.trim())
+      .filter(Boolean)
+      .map((t) =&gt; ({ heading: null, text: t }));
+    return { sections };
+  },
+};</code></pre>
+<p>最后是注册表（<code>src/parsers/index.ts</code>），流水线通过它按格式找解析器：</p>
+<pre class="code"><code class="lang-ts">import type { Parser } from &quot;./types.js&quot;;
+import { markdownParser } from &quot;./markdown.js&quot;;
+import { pdfParser } from &quot;./pdf.js&quot;;
+import { txtParser } from &quot;./txt.js&quot;;
+
+const parsers: Record&lt;string, Parser&gt; = { md: markdownParser, pdf: pdfParser, txt: txtParser };
+
+export function getParser(format: string): Parser {
+  const p = parsers[format];
+  if (!p) throw new Error(`不支持的格式: ${format}（支持 md / pdf / txt）`);
+  return p;
+}</code></pre>
+<h2 id="h-5">分块：兑现 overlap 承诺</h2>
+<p>第 4 章的 recursiveSplit 当时故意没实现 overlap，说好了项目里补。补全版（<code>src/chunking.ts</code>），改动在封块的那几行：</p>
+<pre class="code"><code class="lang-ts">export interface ChunkInput {
+  heading: string | null;
+  content: string;
+}
+
+// 递归分块（第 4 章的完整版：这次带 overlap）
+export function recursiveSplit(
+  text: string,
+  chunkSize: number,
+  overlap: number,
+  separators = [&quot;\n\n&quot;, &quot;\n&quot;, &quot;。&quot;, &quot;？&quot;, &quot;！&quot;, &quot;&quot;]
+): string[] {
+  if (text.length &lt;= chunkSize) return [text];
+  const sep = separators[0];
+  const rest = separators.slice(1);
+  const pieces = sep === &quot;&quot; ? [...text] : text.split(sep);
+
+  const chunks: string[] = [];
+  let current = &quot;&quot;;
+
+  for (const piece of pieces) {
+    if (piece === &quot;&quot;) continue;          // split 会在首尾留下空串，跳过防止产生垃圾块
+    const unit = sep === &quot;&quot; ? piece : piece + sep;
+    if ((current + unit).length &lt;= chunkSize) {
+      current += unit;
+    } else {
+      if (current) chunks.push(current);
+      if (unit.length &gt; chunkSize) {
+        // 单个小片就超标：降级，用更细的分隔符递归切
+        chunks.push(...recursiveSplit(unit, chunkSize, overlap, rest));
+        current = &quot;&quot;;
+      } else {
+        // overlap：下一块从上一块结尾的 overlap 个字符起步
+        current = overlap &gt; 0 &amp;&amp; current.length &gt; overlap
+          ? current.slice(-overlap) + unit
+          : unit;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+// 对解析出的每个节分别分块，保留 heading 元数据
+export function chunkSections(
+  sections: { heading: string | null; text: string }[],
+  chunkSize = 400,
+  overlap = 60
+): ChunkInput[] {
+  const out: ChunkInput[] = [];
+  for (const sec of sections) {
+    for (const content of recursiveSplit(sec.text, chunkSize, overlap)) {
+      out.push({ heading: sec.heading, content });
+    }
+  }
+  return out;
+}</code></pre>
+<p>overlap 的实现就一行核心：封块后，<code>current</code> 不从空白起步，而是从上一块结尾的 60 个字符起步。实测验证（三段各 100 字、chunkSize 150、overlap 30）：</p>
+<pre class="code"><code class="lang-text">#0 len=102  head: 第一段甲甲甲甲甲  tail: 甲甲甲甲甲甲
+#1 len=132  head: 甲甲甲甲甲甲甲甲  tail: 乙乙乙乙乙乙   ← 开头带着 #0 的尾巴
+#2 len=132  head: 乙乙乙乙乙乙乙乙  tail: 丙丙丙丙丙丙   ← 开头带着 #1 的尾巴</code></pre>
+<p>块大小定 400、overlap 60（15%），是第 4 章「中文制度类 300–500 字符 + 10–20% 重叠」经验值的直接取值。<code>chunkSections</code> 按节分块而不是全文一刀切——节是语义单元，块不跨节，heading 元数据也随块保留下来。</p>
+<h2 id="h-6">LLM 客户端与批量 Embedding</h2>
+<p><code>src/core/llm.ts</code> 是供应商可插拔设计的落点：所有模型调用收敛到这一个文件，换供应商只改 <code>.env</code>。</p>
+<pre class="code"><code class="lang-ts">import OpenAI from &quot;openai&quot;;
+import { config } from &quot;./config.js&quot;;
+
+// 聊天模型客户端（OpenAI 兼容协议，换供应商只改 .env）
+export const llm = new OpenAI({
+  apiKey: config.llm.apiKey,
+  baseURL: config.llm.baseUrl,
+});
+
+// Embedding 客户端：允许和聊天模型指向不同供应商（混搭是常态）
+export const embedder = new OpenAI({
+  apiKey: config.embedding.apiKey,
+  baseURL: config.embedding.baseUrl,
+});
+
+// 批量向量化：每批 64 段，避免单次请求过大
+export async function embedBatch(texts: string[]): Promise&lt;number[][]&gt; {
+  const BATCH = 64;
+  const out: number[][] = [];
+  for (let i = 0; i &lt; texts.length; i += BATCH) {
+    const batch = texts.slice(i, i + BATCH);
+    const resp = await embedder.embeddings.create({
+      model: config.embedding.model,
+      input: batch,
+      dimensions: config.embedding.dim,
+    });
+    out.push(...resp.data.map((d) =&gt; d.embedding));
+  }
+  return out;
+}</code></pre>
+<p>三个设计点。<code>llm</code> 和 <code>embedder</code> 是两个独立客户端——第 2 章说过供应商混搭是常态（聊天用 A 家、Embedding 用 B 家），配置分开才有这个自由。批大小 64 是经验值：再大，单请求容易触达 API 的输入上限；再小，请求次数膨胀，免费档的频率限制吃不消。<code>dimensions</code> 显式传配置的维度，和启动时的维度校验形成闭环。</p>
+<p>没有加重试逻辑，是刻意留白：Embedding 调用失败时整个文档标记 failed，重传即重试，对个人应用够用。生产环境该给网络调用加指数退避重试（第一次等 1 秒、第二次 2 秒、第三次 4 秒），第 16 章测试清单会把它列为加固项。</p>
+<h2 id="h-7">流水线与状态机</h2>
+<p>全部零件就位，组装流水线（<code>src/services/ingest.ts</code>）：</p>
+<pre class="code"><code class="lang-ts">import { getParser } from &quot;../parsers/index.js&quot;;
+import { chunkSections } from &quot;../chunking.js&quot;;
+import { embedBatch } from &quot;../core/llm.js&quot;;
+import { updateDocStatus, insertChunks } from &quot;../repositories/documents.js&quot;;
+
+// 导入流水线：解析 → 分块 → 向量化 → 入库，全程驱动文档状态机
+export async function ingestDocument(docId: number, format: string, filePath: string) {
+  try {
+    await updateDocStatus(docId, &quot;processing&quot;);
+
+    // ① 解析：格式差异被解析器挡在这一步，下游只见统一的 sections
+    const parsed = await getParser(format).parse(filePath);
+
+    // ② 分块：递归切分 + overlap，保留 heading 元数据
+    const blocks = chunkSections(parsed.sections, 400, 60);
+    if (blocks.length === 0) throw new Error(&quot;文档内容为空&quot;);
+
+    // ③ 向量化：批量调用 Embedding
+    const vectors = await embedBatch(blocks.map((b) =&gt; b.content));
+
+    // ④ 入库：块和向量一起落 pgvector
+    await insertChunks(
+      blocks.map((b, i) =&gt; ({
+        documentId: docId,
+        seq: i,
+        heading: b.heading,
+        content: b.content,
+        tokenCount: b.content.length, // 中文按字符数近似 token（第 4 章的换算约定）
+        embedding: vectors[i],
+      }))
+    );
+
+    await updateDocStatus(docId, &quot;ready&quot;);
+    console.log(`[ingest] 文档 ${docId} 处理完成：${blocks.length} 块`);
+  } catch (err) {
+    await updateDocStatus(docId, &quot;failed&quot;, err instanceof Error ? err.message : String(err));
+    console.error(`[ingest] 文档 ${docId} 处理失败:`, err);
+  }
+}
+
+// 上传接口拿到响应后立即返回，流水线用 setImmediate 推到后台执行
+export function kickoffIngest(docId: number, format: string, filePath: string) {
+  setImmediate(() =&gt; void ingestDocument(docId, format, filePath));
+}
+
+// 崩溃恢复：服务重启时，把卡在 processing 的文档退回 pending 等人工重传
+export async function recoverStuckDocs() {
+  await pool.query(&quot;UPDATE documents SET status = 'pending', updated_at = now() WHERE status = 'processing'&quot;);
+}</code></pre>
+<p>读这条流水线的三个工程决策。</p>
+<p><strong>setImmediate 是什么角色。</strong> 它把 <code>ingestDocument</code> 推到 Node 事件循环的下一个 tick 执行——上传响应先飞回去，流水线随后开跑，两者互不阻塞。这就是「进程内异步任务」的最小实现：没有队列、没有 worker，靠状态机落库保证进度可追踪。它的短板也明显：服务一崩，正在 processing 的任务就丢了。所以 <code>recoverStuckDocs</code> 在启动时把卡在 processing 的记录退回 pending，用户重传即可。生产环境的正解是任务队列（BullMQ + Redis：任务持久化、失败重试、并发控制全套），第 16 章复盘会指出这个升级点——现在，先让你看清「为什么需要队列」这个问题本身。</p>
+<p><strong>失败不落盘等于没发生。</strong> <code>catch</code> 里把错误消息写进 <code>error_msg</code>，用户在文档列表里能看到「PDF 未提取到文本，可能是扫描件」这样的具体原因，而不是一个干巴巴的「失败」。排错的成本，在设计状态机时就该想好。</p>
+<p><strong>入库前没有事务包裹。</strong> 严格说，chunks 插入和状态更新应该是原子的。个人应用里失败重传的代价足够低，从简；这也是第 16 章的加固项之一。</p>
+<p>仓储层（<code>src/repositories/documents.ts</code>）负责全部 SQL，其中列表查询顺带统计每个文档的块数：</p>
+<pre class="code"><code class="lang-ts">import { eq, desc, count } from &quot;drizzle-orm&quot;;
+import { db } from &quot;../core/db.js&quot;;
+import { documents, chunks } from &quot;../models/schema.js&quot;;
+
+export async function createDocument(data: { filename: string; format: string; sizeBytes: number }) {
+  const [row] = await db.insert(documents).values(data).returning();
+  return row;
+}
+
+export async function listDocuments() {
+  return db
+    .select({
+      id: documents.id,
+      filename: documents.filename,
+      format: documents.format,
+      sizeBytes: documents.sizeBytes,
+      status: documents.status,
+      errorMsg: documents.errorMsg,
+      createdAt: documents.createdAt,
+      chunkCount: count(chunks.id),
+    })
+    .from(documents)
+    .leftJoin(chunks, eq(chunks.documentId, documents.id))
+    .groupBy(documents.id)
+    .orderBy(desc(documents.createdAt));
+}
+
+export async function updateDocStatus(
+  id: number,
+  status: &quot;pending&quot; | &quot;processing&quot; | &quot;ready&quot; | &quot;failed&quot;,
+  errorMsg?: string
+) {
+  await db.update(documents)
+    .set({ status, errorMsg: errorMsg ?? null, updatedAt: new Date() })
+    .where(eq(documents.id, id));
+}
+
+export async function deleteDocument(id: number) {
+  // 外键级联：chunks 跟着删除，向量同步消失
+  await db.delete(documents).where(eq(documents.id, id));
+}
+
+export async function insertChunks(rows: {
+  documentId: number; seq: number; heading: string | null;
+  content: string; tokenCount: number; embedding: number[];
+}[]) {
+  if (rows.length === 0) return;
+  await db.insert(chunks).values(rows); // drizzle 的 vector 字段直接收 number[]
+}</code></pre>
+<p>别忘了在 <code>src/index.ts</code> 挂上文档路由，并在启动时跑崩溃恢复：</p>
+<pre class="code"><code class="lang-ts">import { documentsRouter } from &quot;./routes/documents.js&quot;;
+// ……
+app.use(&quot;/api&quot;, documentsRouter);</code></pre>
+<h2 id="h-8">里程碑 1 验收：三种格式全走一遍</h2>
+<p>后端跑着，准备三份测试文件（一份带标题层级的 Markdown 笔记、一份 TXT、一份用任意方式导出的 PDF），连续上传：</p>
+<pre class="code"><code class="lang-bash">curl -F &quot;file=@test-note.md&quot; http://localhost:8000/api/documents
+curl -F &quot;file=@test-doc.txt&quot; http://localhost:8000/api/documents
+curl -F &quot;file=@test-doc.pdf&quot; http://localhost:8000/api/documents
+curl -F &quot;file=@bad.exe&quot; http://localhost:8000/api/documents   # 顺手验证格式拒绝</code></pre>
+<p>上传接口毫秒级返回 <code>pending</code>（实测输出）：</p>
+<pre class="code"><code class="lang-json">{&quot;id&quot;:1,&quot;filename&quot;:&quot;test-note.md&quot;,&quot;format&quot;:&quot;md&quot;,&quot;status&quot;:&quot;pending&quot;,...}
+{&quot;error&quot;:&quot;不支持的格式 .exe，仅支持 md / pdf / txt&quot;}</code></pre>
+<p>几秒后查列表，状态全部走到 <code>ready</code>，块数符合预期：</p>
+<pre class="code"><code class="lang-json">[
+  {&quot;id&quot;:3,&quot;filename&quot;:&quot;test-doc.pdf&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;chunkCount&quot;:1,...},
+  {&quot;id&quot;:2,&quot;filename&quot;:&quot;test-doc.txt&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;chunkCount&quot;:2,...},
+  {&quot;id&quot;:1,&quot;filename&quot;:&quot;test-note.md&quot;,&quot;status&quot;:&quot;ready&quot;,&quot;chunkCount&quot;:3,...}
+]</code></pre>
+<p>最关键的一步：进数据库亲眼看看块和向量（这一步不要省，「接口说成功了」和「数据真的对」是两回事）：</p>
+<pre class="code"><code class="lang-sql">SELECT document_id, seq, heading, left(content, 20) AS preview, vector_dims(embedding) AS dims
+FROM chunks ORDER BY document_id, seq;</code></pre>
+<pre class="code"><code class="lang-text"> document_id | seq |   heading   |        preview         | dims
+-------------+-----+-------------+------------------------+------
+           1 |   0 | 索引类型    | HNSW 是多层图索引……    | 1024
+           1 |   1 | 距离操作符  | 余弦距离用 &lt;=&gt;……       | 1024
+           1 |   2 | 实战心得    | 维度不匹配的报错信息…… | 1024
+           2 |   0 |             | pgvector HNSW 索引……   | 1024
+           2 |   1 |             | HNSW 是多层图索引……    | 1024
+           3 |   0 |             | pgvector HNSW 索引……   | 1024</code></pre>
+<p>Markdown 的三个块带着正确的 heading（解析器按标题切节的成果），向量维度 1024 与配置一致。再验证级联删除：<code>curl -X DELETE http://localhost:8000/api/documents/1</code>，然后查 <code>SELECT count(*) FROM chunks WHERE document_id = 1;</code>——归零，向量跟着文档一起消失。F1、F2 功能的后端部分，全部落地。</p>
+<h2 id="h-9">常见坑位清单</h2>
+<ul><li><strong>上传成功但永远 pending</strong>：流水线抛错被打日志吞了。先查 <code>error_msg</code> 字段，再看后端控制台。状态机设计的意义就在这——任务丢了，状态不会说谎。</li><li><strong>PDF 提取为空</strong>：扫描件。本系统按需求边界报明确错误，想要 OCR 自己接 Tesseract 或云 OCR，那是另一个项目。</li><li><strong>向量化报频率限制（429/1302）</strong>：免费档限流。把 BATCH 调小、批间加 sleep，或换付费档。</li><li><strong>重启后文档卡在 processing</strong>：崩溃恢复没跑。确认 <code>recoverStuckDocs</code> 在启动路径上。</li><li><strong>multer 落盘文件越来越多</strong>：删除文档时 uploads/ 里的原文也要一起删——本章代码留了这个小尾巴，第 16 章收尾时处理（你能现在就修好它，是个不错的练习）。</li></ul>
+<h2 id="h-10">小结与预告</h2>
+<p>本章把索引期工业化了：上传即返回的异步设计（setImmediate + 状态机 + 崩溃恢复）；解析器统一接口与开闭原则；带 overlap 的递归分块兑现；批量 Embedding 与供应商可插拔；pgvector 入库与级联删除。索引期四条动脉全部打通。</p>
+<p>下一章是项目的心脏：问答 API。查询改写、向量检索、阈值拒答、Prompt 组装、SSE 流式、引用回传、对话历史落库——第 6、8、9 章的所有原理，合成一条端到端的链路。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="12-project-kickoff.html">← 第 12 章</a></span>
+    <span><a href="14-chat-api.html">第 14 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

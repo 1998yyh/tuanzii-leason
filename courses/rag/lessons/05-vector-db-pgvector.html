@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>向量数据库与 pgvector：给向量安个家 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">从一笔算不过来的账开始</a></li><li><a href="#h-3">向量数据库到底管什么</a></li><li><a href="#h-4">选型对比：专用向量库还是 pgvector</a></li><li><a href="#h-5">环境搭建：三条命令起库</a></li><li><a href="#h-9">第一张向量表</a></li><li><a href="#h-10">相似度查询：三个距离操作符</a></li><li><a href="#h-11">规模上来了：ANN 索引</a></li><li><a href="#h-12">实验：一万条向量，有无索引对比</a></li><li><a href="#h-13">从 Node.js 连过来</a></li><li><a href="#h-14">常见误区</a></li><li><a href="#h-15">小结与自测</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 5 章 向量数据库与 pgvector：给向量安个家</h1>
+<blockquote><p>一句话总结：搞懂向量数据库的四大职责与选型逻辑，用 PostgreSQL + pgvector 完成建表、相似度查询、元数据过滤和 HNSW 索引实战。</p></blockquote>
+<h2 id="h-2">从一笔算不过来的账开始</h2>
+<p>第 2 章的玩具 RAG 把向量存在内存数组里，查询时全量遍历。五篇文档毫无压力，现在把数字放大：你的知识库有一万份文档，平均一份切十块，就是十万个向量。每次用户提问，都要把问题向量和这十万个向量各算一次余弦相似度。</p>
+<p>一次余弦计算约两千次乘加（2048 维），十万次就是两亿次浮点运算，单次查询几秒钟起步。服务重启，数组全没了，十万个向量要重新调 Embedding API 生成，按量计费再烧一遍钱。想「只在上季度的文档里搜」？数组里没有地方放这个条件。</p>
+<p>这三个麻烦——算得慢、存不住、没法过滤——就是向量数据库存在的理由。</p>
+<h2 id="h-3">向量数据库到底管什么</h2>
+<p>别被「数据库」三个字唬住，向量数据库干的就四件事：</p>
+<p><strong>存</strong>：向量持久化落盘，重启不丢，还能和向量的「主人」（原文、元数据）放在一起。</p>
+<p><strong>索引</strong>：给向量建 ANN 索引（第 3 章讲的 HNSW 就是其一），把「和十万个向量逐一比对」变成「在图结构里跳几百步」，毫秒级返回近似最近的 TopK。</p>
+<p><strong>召回</strong>：接受一个查询向量，按你指定的距离度量返回最相似的一批结果。</p>
+<p><strong>过滤</strong>：召回的同时支持元数据条件——「只在 document_id = 7 的块里找」「只要上季度的」。这条经常被忽视，但真实业务几乎一定会用到。</p>
+<p>第 3 章解决「怎么算相似」，这一章解决「怎么存、怎么快速找、怎么带条件找」。</p>
+<h2 id="h-4">选型对比：专用向量库还是 pgvector</h2>
+<p>市面上的主流选择分成两派：专门的向量数据库，和在关系型数据库上长出来的向量能力。</p>
+<table><thead><tr><th>方案</th><th>类型</th><th>亮点</th><th>代价</th></tr></thead><tbody><tr><td>Milvus</td><td>专用向量库</td><td>大规模、分布式、功能最全</td><td>部署运维最重，小团队 hold 不住</td></tr><tr><td>Qdrant</td><td>专用向量库</td><td>Rust 实现，性能好，过滤强</td><td>多一套存储系统要维护</td></tr><tr><td>Weaviate</td><td>专用向量库</td><td>模块化、自带混合检索</td><td>同上</td></tr><tr><td>Pinecone</td><td>云托管向量库</td><td>零运维</td><td>按量付费，数据出内网</td></tr><tr><td>pgvector</td><td>PostgreSQL 扩展</td><td>和业务数据同库，SQL 全家桶</td><td>超大规模（亿级）下不如专用库</td></tr></tbody></table>
+<p>本课选 pgvector，理由很实际。第一，实战项目的文档、块、对话记录本来就要存关系型数据库，用 pgvector 意味着<strong>业务数据和向量在同一个库里</strong>：删文档时级联删向量是一个外键的事，不用维护两套存储的一致性。第二，你会的 SQL 全部直接复用，元数据过滤就是普通的 WHERE。第三，个人和中小团队的量级（百万向量以内），pgvector 的性能完全够用，它的 HNSW 实现和社区 benchmark 表现都相当扎实。</p>
+<p>什么时候该换专用库？向量规模上到千万级以上、需要分布式水平扩展、或者检索 QPS 非常高的时候。第 16 章复盘会再聊这个判断。</p>
+<h2 id="h-5">环境搭建：三条命令起库</h2>
+<h3 id="h-6">完成标准</h3>
+<p>能在 PostgreSQL 里执行 <code>SELECT extversion FROM pg_extension WHERE extname = 'vector';</code> 并看到版本号。</p>
+<h3 id="h-7">Docker 方式（推荐，最省事）</h3>
+<p>装了 Docker 的同学一条命令起一个自带 pgvector 的 PostgreSQL 16：</p>
+<pre class="code"><code class="lang-bash">docker run -d --name rag-pg \
+  -e POSTGRES_PASSWORD=rag123 \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16</code></pre>
+<p>镜像里的 PostgreSQL 已预装 pgvector 扩展。容器跑起来后，进数据库建一个课程专用库并启用扩展：</p>
+<pre class="code"><code class="lang-bash">docker exec -it rag-pg psql -U postgres</code></pre>
+<pre class="code"><code class="lang-sql">CREATE DATABASE ragcourse;
+\c ragcourse
+CREATE EXTENSION vector;
+SELECT extversion FROM pg_extension WHERE extname = 'vector';</code></pre>
+<p>最后一行看到版本号就齐了（2026-07-29 实测 <code>pgvector/pgvector:pg16</code> 镜像内置 0.8.5；0.8.x 系列修复过并行建索引的安全问题，用 0.8.1 及以下老版本的话建议升级）。</p>
+<h3 id="h-8">本地安装方式</h3>
+<p>不想用 Docker 的 macOS 同学：<code>brew install postgresql@16 pgvector</code>，然后 <code>brew services start postgresql@16</code>，剩下建库和 <code>CREATE EXTENSION vector</code> 的步骤一样。Windows 同学建议直接走 Docker，少踩一堆编译坑。</p>
+<p>后面章节统一用 <code>ragcourse</code> 这个库。<code>psql</code> 是 PostgreSQL 自带的命令行客户端，本章的 SQL 都在它里面执行；不习惯命令行的也可以用任何数据库 GUI（TablePlus、DBeaver 都行）。</p>
+<h2 id="h-9">第一张向量表</h2>
+<p>建表之前先想清楚：一块数据长什么样？对照第 4 章的设计——正文、向量、元数据（出自哪份文档、第几块、所属标题）：</p>
+<pre class="code"><code class="lang-sql">CREATE TABLE chunks (
+  id          BIGSERIAL PRIMARY KEY,
+  document_id TEXT NOT NULL,          -- 元数据：出自哪份文档
+  seq         INT  NOT NULL,          -- 元数据：第几块
+  heading     TEXT,                   -- 元数据：所属标题
+  content     TEXT NOT NULL,          -- 块原文
+  embedding   vector(4) NOT NULL      -- 向量，括号里是维度
+);</code></pre>
+<p><code>vector(4)</code> 是 pgvector 提供的向量类型，括号里的数字是维度。教学用 4 维好观察，真实项目要换成你的 Embedding 模型维度（比如 2048）。</p>
+<p>维度是硬约束，插错直接报错：</p>
+<pre class="code"><code class="lang-sql">INSERT INTO chunks (document_id, seq, heading, content, embedding)
+VALUES ('handbook', 1, '报销规则', '报销应在 30 天内提交', '[0.9, 0.1, 0.2, 0.05]');
+
+-- 下面这条会报错：expected 4 dimensions, not 3
+INSERT INTO chunks (document_id, seq, content, embedding)
+VALUES ('handbook', 2, '维度不对的块', '[0.1, 0.2, 0.3]');</code></pre>
+<p>这个报错值得你主动触发一次看眼熟。生产环境里「Embedding 模型换了维度，表还是旧维度」是高频事故，报错信息就是你现在看到的这句。实战项目里我们会让后端启动时主动校验「配置维度 = 表维度」，把事故挡在门外。</p>
+<p>再插几条，凑齐一个迷你知识库：</p>
+<pre class="code"><code class="lang-sql">INSERT INTO chunks (document_id, seq, heading, content, embedding) VALUES
+  ('handbook', 2, '差旅标准', '一线城市住宿每晚不超过 500 元', '[0.85, 0.15, 0.1, 0.1]'),
+  ('handbook', 3, '年假规则', '入职满一年享年假 5 天', '[0.1, 0.9, 0.1, 0.2]'),
+  ('handbook', 4, '加班规则', '加班费按小时工资 1.5 倍计算', '[0.15, 0.85, 0.2, 0.15]'),
+  ('handbook', 5, '设备报修', '设备损坏联系行政部报修', '[0.05, 0.1, 0.9, 0.3]');</code></pre>
+<h2 id="h-10">相似度查询：三个距离操作符</h2>
+<p>pgvector 提供三个距离操作符，对应三种度量：</p>
+<table><thead><tr><th>操作符</th><th>含义</th><th>适用</th></tr></thead><tbody><tr><td><code>&lt;=&gt;</code></td><td>余弦距离（1 − 余弦相似度）</td><td>文本语义检索，本课默认</td></tr><tr><td><code>&lt;-&gt;</code></td><td>欧氏距离（L2）</td><td>向量已归一化时与余弦等价</td></tr><tr><td><code>&lt;#&gt;</code></td><td>负内积</td><td>特定模型要求内积度量时</td></tr></tbody></table>
+<p>注意第一个坑：<code>&lt;=&gt;</code> 算的是<strong>距离</strong>，越小越相似，和第 3 章的「相似度越大越相似」正好反过来。距离 0 表示完全同向，距离 2 表示完全反向。想换算回相似度，用 <code>1 - (embedding &lt;=&gt; 查询向量)</code>。</p>
+<p>找出和问题向量 <code>[0.88, 0.12, 0.12, 0.08]</code> 最相似的三块：</p>
+<pre class="code"><code class="lang-sql">SELECT content,
+       embedding &lt;=&gt; '[0.88, 0.12, 0.12, 0.08]' AS distance
+FROM chunks
+ORDER BY embedding &lt;=&gt; '[0.88, 0.12, 0.12, 0.08]'
+LIMIT 3;</code></pre>
+<p><code>ORDER BY ... LIMIT 3</code> 就是 TopK 检索的 SQL 形态。跑一下（这是 2026-07-29 在 pgvector 0.8.5 上的真实输出）：</p>
+<pre class="code"><code class="lang-text">            content            |       distance
+-------------------------------+-----------------------
+ 一线城市住宿每晚不超过 500 元 | 0.0012504622247824226
+ 报销应在 30 天内提交          | 0.004345761644619084
+ 加班费按小时工资 1.5 倍计算   | 0.6660686308486407</code></pre>
+<p>排第一的是「一线城市住宿每晚不超过 500 元」，它的向量和查询向量方向最接近，距离只有 0.001 量级。注意第三名的距离一下子跳到 0.67——相关和不相关之间隔着一道明显的分数鸿沟，第 3 章说的「阈值判断」就是看这种鸿沟定的。</p>
+<p>元数据过滤就是普通的 WHERE，没有任何新语法：</p>
+<pre class="code"><code class="lang-sql">-- 只在 handbook 文档的前 3 块里检索
+SELECT content, embedding &lt;=&gt; '[0.88, 0.12, 0.12, 0.08]' AS distance
+FROM chunks
+WHERE document_id = 'handbook' AND seq &lt;= 3
+ORDER BY distance
+LIMIT 3;</code></pre>
+<p>「向量相似 + 业务条件」混在一条 SQL 里，这是 pgvector 相对专用向量库最顺手的时刻——过滤条件就是你的业务字段，不用学任何专门的过滤语法。</p>
+<h2 id="h-11">规模上来了：ANN 索引</h2>
+<p>现在的表只有五行，PostgreSQL 全表扫描（逐行算距离再排序）毫无压力。插十万行试试，查询就开始喘了。解决办法是给 embedding 列建 ANN 索引。pgvector 提供两种：</p>
+<table><thead><tr><th>索引</th><th>原理一句话</th><th>特点</th><th>适用</th></tr></thead><tbody><tr><td>HNSW</td><td>多层图，图上跳跃逼近</td><td>召回率高、查询快；占内存多、建索引慢</td><td>大多数场景的首选</td></tr><tr><td>IVFFlat</td><td>先聚类分桶，查询只搜最近的几个桶</td><td>建索引快、占内存少；召回率略低，需要表里先有数据再建</td><td>数据量超大且写入频繁</td></tr></tbody></table>
+<p>第 3 章讲过 HNSW 的直觉，直接建：</p>
+<pre class="code"><code class="lang-sql">CREATE INDEX chunks_embedding_hnsw ON chunks
+USING hnsw (embedding vector_cosine_ops);</code></pre>
+<p>IVFFlat 的建法放在这里对照（本课和实战项目都用 HNSW）：</p>
+<pre class="code"><code class="lang-sql">-- lists 是分桶数量，官方经验值：行数 / 1000 左右
+CREATE INDEX chunks_embedding_ivf ON chunks
+USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- 查询时还要设 probes（搜几个桶），越大越准越慢
+SET ivfflat.probes = 10;</code></pre>
+<p>两个细节不能省。一是 <code>vector_cosine_ops</code> 必须和你的查询操作符配套：用 <code>&lt;=&gt;</code> 查询就建 <code>vector_cosine_ops</code> 的索引，用 <code>&lt;-&gt;</code> 就建 <code>vector_l2_ops</code>，配套错了索引不生效。二是 HNSW 有两个调优参数：<code>m</code>（每个点的最大连接数，默认 16，越大召回越准但内存越大）和 <code>ef_construction</code>（建索引时的搜索宽度，默认 64，越大索引质量越好但建得越慢）。默认参数对大多数场景够用，第 10 章学了评估后再谈调优。</p>
+<p>建完索引，查询计划就变了。用 <code>EXPLAIN</code> 亲眼看看：</p>
+<pre class="code"><code class="lang-sql">EXPLAIN SELECT content FROM chunks
+ORDER BY embedding &lt;=&gt; '[0.88, 0.12, 0.12, 0.08]' LIMIT 3;</code></pre>
+<p>没建索引时计划里是 <code>Seq Scan</code>（全表扫描）；建完之后变成 <code>Index Scan using chunks_embedding_hnsw</code>。真实项目里，看到相似度查询走了 Seq Scan 就是警报——要么索引没建，要么没生效。</p>
+<p>数据量太小的时候（比如就这几行），PostgreSQL 会故意不用索引——全表扫比走索引还便宜，这是优化器的正常判断，不是索引坏了。要观察索引效果，表里至少得有上万行。</p>
+<h2 id="h-12">实验：一万条向量，有无索引对比</h2>
+<p>光说不够，造点数据实测。生成一万条随机向量（4 维，教学够用；维度不影响结论）：</p>
+<pre class="code"><code class="lang-sql">INSERT INTO chunks (document_id, seq, content, embedding)
+SELECT 'bulk', g, '随机块 ' || g,
+       ('[' || random() || ',' || random() || ',' || random() || ',' || random() || ']')::vector
+FROM generate_series(1, 10000) AS g;</code></pre>
+<p><code>generate_series</code> 生成一万行，每行一个随机四维向量。然后对比实验：</p>
+<pre class="code"><code class="lang-sql">-- 先删掉刚才的索引
+DROP INDEX IF EXISTS chunks_embedding_hnsw;
+
+-- 无索引：看计划和耗时
+EXPLAIN ANALYZE SELECT content FROM chunks
+ORDER BY embedding &lt;=&gt; '[0.5, 0.5, 0.5, 0.5]' LIMIT 5;
+
+-- 重建索引，再跑一次同样的查询
+CREATE INDEX chunks_embedding_hnsw ON chunks
+USING hnsw (embedding vector_cosine_ops);
+
+EXPLAIN ANALYZE SELECT content FROM chunks
+ORDER BY embedding &lt;=&gt; '[0.5, 0.5, 0.5, 0.5]' LIMIT 5;</code></pre>
+<p>重点看 <code>EXPLAIN ANALYZE</code> 输出里的两行：<code>Seq Scan</code> 还是 <code>Index Scan</code>，以及末尾的 <code>Execution Time</code>。一万行规模的真实对比（pgvector 0.8.5 实测）：</p>
+<pre class="code"><code class="lang-text">无索引：  Seq Scan on chunks (actual time=0.007..1.010 rows=10005)
+          Execution Time: 1.452 ms          ← 扫了全部 10005 行
+有索引：  Index Scan using chunks_embedding_hnsw (actual time=0.462..0.472 rows=5)
+          Execution Time: 0.502 ms          ← 只碰了 5 行</code></pre>
+<p>一万行下差距是 3 倍左右，还不算惊人，但注意本质差别：Seq Scan 的耗时随行数线性涨（十万行就是十倍），HNSW 的耗时对行数几乎不敏感。把 generate_series 改成十万再试，差距会拉到数量级——这就是第 3 章「ANN 用一点近似换数量级速度」的实证。</p>
+<p>实验做完可以把这一万条清掉：<code>DELETE FROM chunks WHERE document_id = 'bulk';</code></p>
+<h2 id="h-13">从 Node.js 连过来</h2>
+<p>SQL 会在 psql 里敲了，程序里怎么用？Node 侧官方主流驱动是 <code>pg</code>（node-postgres）：</p>
+<pre class="code"><code class="lang-bash">npm install pg</code></pre>
+<pre class="code"><code class="lang-ts">import pg from &quot;pg&quot;;
+const { Pool } = pg;
+
+// 连接池：维护一组可复用的数据库连接，避免每次查询都新建连接
+const pool = new Pool({
+  host: &quot;localhost&quot;,
+  database: &quot;ragcourse&quot;,
+  user: &quot;postgres&quot;,
+  password: &quot;rag123&quot;,
+});
+
+// 向量用字符串字面量传给 SQL
+const qVector = `[${[0.88, 0.12, 0.12, 0.08].join(&quot;,&quot;)}]`;
+
+const { rows } = await pool.query(
+  `SELECT content, embedding &lt;=&gt; $1 AS distance
+   FROM chunks
+   WHERE document_id = $2
+   ORDER BY distance
+   LIMIT $3`,
+  [qVector, &quot;handbook&quot;, 3]
+);
+
+for (const row of rows) console.log(row.distance.toFixed(4), row.content);
+await pool.end();</code></pre>
+<p>三个要点。第一，<code>Pool</code> 是连接池：数据库连接是贵重资源，建一次 TCP 握手加认证要几十毫秒，池子预先维护几条连接反复复用，这是所有后端应用的标配姿势。第二，SQL 里的 <code>$1 $2 $3</code> 是参数占位符，值走数组传入，永远不要拿字符串拼接 SQL——拼接是 SQL 注入的温床，这条纪律从第一天就要有。第三，向量以 <code>'[0.88,0.12,...]'</code> 的字符串形式传给占位符，pgvector 在数据库侧自动解析成 vector 类型。</p>
+<p>实战项目会在这之上再包一层 Drizzle ORM 做类型安全，但向量检索这条 SQL 会保留原生写法——ORM 对向量操作符的支持至今都不如手写 SQL 直接。</p>
+<h2 id="h-14">常见误区</h2>
+<p><strong>误区一：距离和相似度搞反。</strong> <code>&lt;=&gt;</code> 是距离，小为好。有人按「相似度越大越好」的思路设阈值 <code>distance &gt; 0.6 才保留</code>，结果把最相关的结果全过滤了。设阈值前先想清楚你手里拿的是距离还是相似度（第 14 章做拒答判断时还会强调）。</p>
+<p><strong>误区二：建了索引查询就一定快。</strong> 数据量小，优化器不走索引；操作符和索引类型不配套（<code>&lt;=&gt;</code> 配 <code>vector_l2_ops</code>），索引不生效；过滤条件把结果集筛得太小时，优化器也可能弃索引走全表。用 <code>EXPLAIN</code> 验证，别猜。</p>
+<p><strong>误区三：索引是免费午餐。</strong> HNSW 索引要占内存（图结构约为向量数据的三成），写入时还要维护图，插入更新会比无索引慢。读多写少的知识库场景完全值得，写入极其频繁的场景要掂量。</p>
+<p><strong>误区四：向量库选完就万事大吉。</strong> 数据库只负责「快」，「准」取决于 Embedding 质量和分块质量。第 10 章你会看到，检索出问题先查的永远不是索引。</p>
+<h2 id="h-15">小结与自测</h2>
+<p>本章你的向量从内存数组搬进了正经数据库：向量数据库的四大职责（存、索引、召回、过滤）；pgvector 的选型逻辑（业务数据与向量同库的价值）；<code>vector(n)</code> 类型与维度硬约束；三个距离操作符和「距离越小越相似」；HNSW 索引的建法、配套规则和验证手段；Node 侧连接池与参数化查询两条纪律。</p>
+<p>自测：</p>
+<ol><li><code>&lt;=&gt;</code> 算出来的值，0.1 和 0.9 哪个更相似？为什么这个操作符的设计容易让人搞反？</li><li>同事说「我建了 HNSW 索引，但 EXPLAIN 显示还是 Seq Scan」，你会让他按什么顺序排查？</li><li>实战项目「删文档级联删向量」，如果用「业务库 MySQL + 专用向量库」的双存储方案，这件事会麻烦在哪？</li><li><code>vector(2048)</code> 的表，Embedding 模型换成输出 1024 维的新型号，直接写入会发生什么？正确的迁移步骤是什么？</li><li>什么信号出现时，你会认真考虑把 pgvector 换成专用向量库？</li></ol>
+<p>模块一到此收官：背景（1）、全景（2）、Embedding（3）、分块（4）、向量库（5），索引期和查询期的每个零件你都摸过了。模块二开始上强度——第 6 章先解决「用户的问题本身就很难检索」这个现实：查询理解与改写。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="04-chunking.html">← 第 4 章</a></span>
+    <span><a href="06-query-rewriting.html">第 6 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问答 API：语义检索、Prompt 组装与流式问答 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">链路总览：查询期的工业化</a></li><li><a href="#h-3">数据层：会话、消息与检索</a></li><li><a href="#h-4">查询改写：第 6 章的生产版</a></li><li><a href="#h-5">阈值拒答：方向，方向，还是方向</a></li><li><a href="#h-6">Prompt 组装：生产版的 buildMessages</a></li><li><a href="#h-7">SSE 路由：逐行解剖流式协议</a></li><li><a href="#h-8">主链路：async generator 的用武之地</a></li><li><a href="#h-9">里程碑 2 验收：curl 实测全链路</a></li><li><a href="#h-10">常见坑位清单</a></li><li><a href="#h-11">小结与预告</a></li></ol></nav>
+<article>
+<h1 id="h-1">第 14 章 问答 API：语义检索、Prompt 组装与流式问答</h1>
+<blockquote><p>一句话总结：实现「改写 → 检索 → 阈值拒答 → 组装 → 流式生成 → 引用回传 → 落库」的完整问答链路，多轮对话与 SSE 端到端可用。</p></blockquote>
+<h2 id="h-2">链路总览：查询期的工业化</h2>
+<p>第 2 章你手写过一个 60 行的 naive RAG，本章是它的生产形态。同一个问题「我笔记里 pgvector 索引怎么建」，从进来到出去要走七个环节：</p>
+<div class="mermaid">flowchart LR
+  Q[&quot;POST /api/chat&lt;br/&gt;question + conversationId&quot;] --&gt; RW[&quot;① 查询改写&lt;br/&gt;（多轮指代补全）&quot;]
+  RW --&gt; E[&quot;② 问题向量化&quot;]
+  E --&gt; S[&quot;③ pgvector TopK&lt;br/&gt;+ 距离阈值过滤&quot;]
+  S --&gt; T{&quot;有相关块？&quot;}
+  T -- &quot;无&quot; --&gt; NO[&quot;拒答路径&quot;]
+  T -- &quot;有&quot; --&gt; P[&quot;④ Prompt 组装&lt;br/&gt;编号资料 + 历史&quot;]
+  NO --&gt; P
+  P --&gt; G[&quot;⑤ LLM 流式生成&quot;]
+  G --&gt; SSE[&quot;⑥ SSE 逐事件推送&lt;br/&gt;meta/citations/token/done&quot;]
+  SSE --&gt; DB[&quot;⑦ 消息与引用落库&quot;]</div>
+<p>这一章的代码量是全项目最密集的，但每个环节的原理你都学过了：改写是第 6 章、检索是第 5 章、阈值是第 8 章、组装是第 9 章、流式是第 9 章的 SSE。本章的真正新课题只有一个：怎么把它们组织成一条边界清晰的服务端链路。</p>
+<h2 id="h-3">数据层：会话、消息与检索</h2>
+<p>先铺数据层（<code>src/repositories/chat.ts</code>）。会话和消息的 CRUD 没有新东西，注意三个设计点：<code>listConversations</code> 按 <code>updatedAt</code> 倒序（最近活跃的会话排最前，每次有新消息就戳一下这个时间戳）；<code>searchChunks</code> 就是第 5 章那条相似度 SQL 的原样搬进（<code>&lt;=&gt;</code> 余弦距离，越小越相似）；<code>getChunk</code> 联表查出块的原文和出处文件名，给引用溯源用。</p>
+<pre class="code"><code class="lang-ts">import { eq, desc, asc } from &quot;drizzle-orm&quot;;
+import { db, pool } from &quot;../core/db.js&quot;;
+import { conversations, messages } from &quot;../models/schema.js&quot;;
+
+export async function createConversation(title = &quot;新对话&quot;) {
+  const [row] = await db.insert(conversations).values({ title }).returning();
+  return row;
+}
+
+export async function listConversations() {
+  return db.select().from(conversations).orderBy(desc(conversations.updatedAt));
+}
+
+export async function deleteConversation(id: number) {
+  await db.delete(conversations).where(eq(conversations.id, id)); // 级联删 messages
+}
+
+export async function listMessages(conversationId: number) {
+  return db.select().from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(asc(messages.createdAt));
+}
+
+export async function addMessage(data: {
+  conversationId: number; role: &quot;user&quot; | &quot;assistant&quot;;
+  content: string; citations?: number[];
+}) {
+  const [row] = await db.insert(messages).values({
+    conversationId: data.conversationId,
+    role: data.role,
+    content: data.content,
+    citations: data.citations ?? null,
+  }).returning();
+  // 更新会话的 updatedAt，让列表按最近活跃排序
+  await db.update(conversations).set({ updatedAt: new Date() })
+    .where(eq(conversations.id, data.conversationId));
+  return row;
+}
+
+// 向量检索：TopK + 距离（cosine distance，越小越相似）
+export async function searchChunks(queryVector: number[], topK: number) {
+  const vec = `[${queryVector.join(&quot;,&quot;)}]`;
+  const { rows } = await pool.query(
+    `SELECT id, document_id, heading, content,
+            embedding &lt;=&gt; $1 AS distance
+     FROM chunks
+     ORDER BY embedding &lt;=&gt; $1
+     LIMIT $2`,
+    [vec, topK]
+  );
+  return rows as { id: number; document_id: number; heading: string | null; content: string; distance: number }[];
+}
+
+// 引用溯源：按 chunk id 取原文与出处
+export async function getChunk(id: number) {
+  const { rows } = await pool.query(
+    `SELECT c.id, c.content, c.heading, c.seq, d.filename AS doc_name
+     FROM chunks c JOIN documents d ON d.id = c.document_id
+     WHERE c.id = $1`,
+    [id]
+  );
+  return rows[0] ?? null;
+}</code></pre>
+<p>向量检索这条 SQL 走原生 <code>pool.query</code> 而不是 Drizzle 的查询构造器——第 5 章说过，<code>&lt;=&gt;</code> 这类向量操作符，手写 SQL 比 ORM 抽象直接得多。分层纪律没破：SQL 仍然只在 repository 层。</p>
+<h2 id="h-4">查询改写：第 6 章的生产版</h2>
+<p>多轮对话的指代消解，项目里的实现（<code>src/services/chat.ts</code>，分段讲解）：</p>
+<pre class="code"><code class="lang-ts">import { llm, embedBatch } from &quot;../core/llm.js&quot;;
+import { config } from &quot;../core/config.js&quot;;
+import {
+  addMessage, listMessages, searchChunks, createConversation,
+} from &quot;../repositories/chat.js&quot;;
+
+const HISTORY_TURNS = 5;          // 近 5 轮原文进 Prompt
+const TOP_K = 5;                  // 检索取 5 块
+const DISTANCE_THRESHOLD = 0.6;   // 余弦距离阈值，超过视为不相关（调参点）
+
+type HistoryMessage = { role: &quot;user&quot; | &quot;assistant&quot;; content: string };
+
+// 查询改写（第 6 章）：有历史时把指代问题补全为自包含检索句
+async function rewriteQuery(history: HistoryMessage[], question: string): Promise&lt;string&gt; {
+  if (history.length === 0) return question; // 无历史不改写，省一次调用
+  const historyText = history
+    .map((m) =&gt; `${m.role === &quot;user&quot; ? &quot;用户&quot; : &quot;助手&quot;}：${m.content}`)
+    .join(&quot;\n&quot;);
+  const resp = await llm.chat.completions.create({
+    model: config.llm.model,
+    messages: [
+      {
+        role: &quot;system&quot;,
+        content:
+          &quot;你是查询改写器。根据对话历史，把用户的最新问题改写成一个不依赖上下文也能理解的完整问句。&quot; +
+          &quot;保留专有名词和限定条件，不添加新意图。只输出改写后的问句，不要回答问题。&quot;,
+      },
+      { role: &quot;user&quot;, content: `【对话历史】\n${historyText}\n\n【最新问题】\n${question}` },
+    ],
+  });
+  return resp.choices[0].message.content!.trim();
+}</code></pre>
+<p>和第 6 章实验版的差异就两处，都是生产化打磨：prompt 里补了「保留专有名词、不添加新意图」两条保真约束；历史从「外部传入」变成「从数据库读最近 5 轮」。<code>HISTORY_TURNS</code> 取 5 的道理第 6 章讲过：指代很少跨十几轮，塞更多历史只会让改写器抓不住重点。</p>
+<h2 id="h-5">阈值拒答：方向，方向，还是方向</h2>
+<p>检索和阈值过滤：</p>
+<pre class="code"><code class="lang-ts">// ④ 阈值拒答（第 8/9 章：距离越小越相似，注意方向！）
+const relevant = hits.filter((h) =&gt; h.distance &lt;= DISTANCE_THRESHOLD);
+const citations = relevant.map((h, i) =&gt; ({
+  ref: i + 1,
+  chunkId: h.id,
+  heading: h.heading,
+  snippet: h.content.slice(0, 80),
+}));
+yield { event: &quot;citations&quot;, data: citations };</code></pre>
+<p>第 5 章强调过的方向问题在这里是实打实的 bug 温床：<code>&lt;=&gt;</code> 是<strong>距离</strong>，越小越相似，所以过滤条件是 <code>distance &lt;= 阈值</code>。写成 <code>&gt;=</code> 的，系统会把所有相关块扔掉、专留不相关的——而且测试时不一定立刻发现，因为链路照样跑、答案照样出（只是变烂）。阈值 0.6 是起步值，第 16 章用评估集实测调优。</p>
+<p>拒答的实现不是「不回答」，而是换一条 Prompt 路径： citations 为空数组（前端据此可以不显示引用区），资料替换为一句「未检索到相关内容」，指令兜底让模型明说不知道：</p>
+<pre class="code"><code class="lang-ts">// ⑤ 组装 Prompt（拒答路径：空资料 + 指令兜底）
+const messages = relevant.length &gt; 0
+  ? buildMessages(relevant, history, question)
+  : buildMessages([{ content: &quot;（资料库中没有检索到相关内容）&quot; }], history, question);</code></pre>
+<p>为什么拒答也走 LLM 而不是返回固定文案？第 9 章说过：让拒答语气自然（「这份资料里没找到 X，要不要补充相关笔记？」），且保持行为一致——「回答有资料的部分」这种部分拒答场景，本来就需要模型参与。</p>
+<h2 id="h-6">Prompt 组装：生产版的 buildMessages</h2>
+<pre class="code"><code class="lang-ts">// Prompt 组装（第 9 章）：编号资料 + 引用规则 + 部分拒答约定
+function buildMessages(chunks: { content: string }[], history: HistoryMessage[], question: string) {
+  const context = chunks.map((c, i) =&gt; `[${i + 1}] ${c.content}`).join(&quot;\n\n&quot;);
+  // 历史里的旧角标洗掉，防止模型混淆旧编号与本次编号
+  const cleanHistory = history.map((m) =&gt; ({
+    role: m.role as &quot;user&quot; | &quot;assistant&quot;,
+    content: m.content.replace(/\[\d+\]/g, &quot;&quot;),
+  }));
+  return [
+    {
+      role: &quot;system&quot; as const,
+      content:
+        &quot;你是个人笔记助手。仅根据【资料】回答问题，规则：\n&quot; +
+        &quot;1. 引用的事实句末标注 [n]（n 为资料编号）。\n&quot; +
+        &quot;2. 资料不足时，回答有资料的部分，并说明哪些没有查到。\n&quot; +
+        &quot;3. 完全没有相关资料时，明确说「根据现有资料无法回答」。\n\n&quot; +
+        `【资料】\n${context}`,
+    },
+    ...cleanHistory,
+    { role: &quot;user&quot; as const, content: question },
+  ];
+}</code></pre>
+<p>第 9 章埋的「历史角标污染」伏笔在这里回收：历史消息里助手旧回答的 <code>[1]</code> <code>[2]</code> 是<strong>上次检索</strong>的编号，和本次资料编号是两码事，一行正则洗掉。漏了这一步的典型症状是：模型在新答案里引用一个本次资料里根本不存在的编号。</p>
+<p>还有一个第 9 章 Token 预算的落地检查点。本章的预算分配是：5 块资料 × 平均 400 字符 ≈ 2000 token，历史 5 轮 × 约 200 字符 ≈ 1000 token，指令加问题几百 token——总量三千出头，离 glm-4.7-flash 的窗口远着呢。这就是第 9 章预算表在项目里的真实样子：不是算出来看的眼，而是「块数 × 块大小」「轮数 × 平均长度」这两组参数的直接产物。资料侧超预算时优先砍尾部块（相关度最低的），历史侧超预算时优先砍最早的轮次——两个「砍」都保住了质量最高的部分。</p>
+<h2 id="h-7">SSE 路由：逐行解剖流式协议</h2>
+<p>路由层（<code>src/routes/chat.ts</code>）先把 SSE 的协议动作做全：</p>
+<pre class="code"><code class="lang-ts">import { Router } from &quot;express&quot;;
+import { chat } from &quot;../services/chat.js&quot;;
+import {
+  createConversation, listConversations, deleteConversation, listMessages, getChunk,
+} from &quot;../repositories/chat.js&quot;;
+
+export const chatRouter = Router();
+
+chatRouter.post(&quot;/chat&quot;, async (req, res) =&gt; {
+  const { conversationId, question } = req.body ?? {};
+  if (!question || typeof question !== &quot;string&quot;) {
+    return res.status(400).json({ error: &quot;question 不能为空&quot; });
+  }
+
+  // SSE 三件套响应头：事件流类型、禁缓存、保活
+  res.writeHead(200, {
+    &quot;Content-Type&quot;: &quot;text/event-stream&quot;,
+    &quot;Cache-Control&quot;: &quot;no-cache&quot;,
+    Connection: &quot;keep-alive&quot;,
+  });
+
+  const send = (event: string, data: unknown) =&gt; {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    for await (const ev of chat(question, conversationId)) {
+      send(ev.event, ev.data);
+    }
+  } catch (err) {
+    send(&quot;error&quot;, { message: err instanceof Error ? err.message : &quot;服务器错误&quot; });
+  } finally {
+    res.end();
+  }
+});</code></pre>
+<p>逐行拆解这个协议。<code>Content-Type: text/event-stream</code> 告诉客户端「这个响应不会一次性结束，准备持续收事件」；<code>Cache-Control: no-cache</code> 防中间层缓存；响应体里每个事件是四行结构——<code>event: 事件名</code>、<code>data: JSON</code>、<code>空行</code>（空行是事件的分隔符，漏了客户端就解析不出来）。<code>res.write</code> 写一块就立即发一块，<code>res.end()</code> 才收尾。</p>
+<p>为什么不用 WebSocket？它是全双工协议，为「双方随时互发消息」设计；问答是「一问一答流」——客户端发一次问题，服务端推一串增量，SSE 的单向推送刚好匹配，还白赚 HTTP 的语义（代理友好、断线可重连）。什么时候该 WebSocket：协作编辑、多人聊天室这类真双向场景。</p>
+<p>为什么前端不能用 EventSource？浏览器原生 EventSource 只支持 GET，而问答必须 POST 带 JSON body。第 15 章会用 fetch + ReadableStream 手工解析，那是前端的活。</p>
+<h2 id="h-8">主链路：async generator 的用武之地</h2>
+<p>看 <code>chat</code> 函数的签名，它是个<strong>异步生成器（async generator）</strong>——本章唯一的新语法点，值得专门讲：</p>
+<pre class="code"><code class="lang-ts">export interface ChatEvent {
+  event: &quot;meta&quot; | &quot;citations&quot; | &quot;token&quot; | &quot;done&quot; | &quot;error&quot;;
+  data: unknown;
+}
+
+// 问答主链路：改写 → 检索 → 阈值判断 → 流式生成 → 落库
+export async function* chat(question: string, conversationId?: number): AsyncGenerator&lt;ChatEvent&gt; {
+  // ……函数体里用 yield 逐个抛出事件
+}</code></pre>
+<p>普通函数 return 一次就结束；生成器函数（<code>function*</code>）可以 <code>yield</code> 多次，每 yield 一次，调用方的 <code>for await</code> 循环就拿到一个值，函数暂停在原地等下一次拉取。异步生成器（<code>async function*</code>）允许函数体里 await 异步操作。看一个最小例子建立直觉：</p>
+<pre class="code"><code class="lang-ts">async function* count() {
+  yield 1;
+  await new Promise((r) =&gt; setTimeout(r, 500));
+  yield 2;
+  yield 3;
+}
+
+for await (const n of count()) console.log(n); // 依次打印 1、2、3（中间停半秒）</code></pre>
+<p>控制权的转移是双向的：生成器暂停时，调用方在做别的事（比如把刚收到的事件写进 HTTP 响应）；调用方要下一个值时，生成器从暂停处接着跑。这种「按需拉取」的特质，和流式数据是天作之合。</p>
+<p>为什么这里用它而不是直接往 <code>res</code> 里写？<strong>分层</strong>。service 层如果直接操作 <code>res</code>，它就和 HTTP 协议焊死了——没法测试、没法复用（比如以后加个命令行客户端）。让 service 只产出「事件流」（纯数据），路由层负责把事件翻译成 SSE 协议文本，这就是依赖方向纪律在流式场景的体现：业务不知道协议，协议不包含业务。</p>
+<p>完整函数体（对照第 1 节的链路图逐段读）：</p>
+<pre class="code"><code class="lang-ts">export async function* chat(question: string, conversationId?: number): AsyncGenerator&lt;ChatEvent&gt; {
+  // 会话：没有就新建；首轮用问题前 20 字当标题（LLM 摘要标题是后续优化点）
+  const conv = conversationId
+    ? { id: conversationId }
+    : await createConversation(question.slice(0, 20));
+
+  const historyRows = await listMessages(conv.id);
+  const history: HistoryMessage[] = historyRows
+    .slice(-HISTORY_TURNS * 2)
+    .map((m) =&gt; ({ role: m.role as &quot;user&quot; | &quot;assistant&quot;, content: m.content }));
+
+  yield { event: &quot;meta&quot;, data: { conversationId: conv.id } };
+  await addMessage({ conversationId: conv.id, role: &quot;user&quot;, content: question });
+
+  // ① 改写 → ② 向量化 → ③ 检索
+  const rewritten = await rewriteQuery(history, question);
+  const [qVector] = await embedBatch([rewritten]); // 单条也走批量通道
+  const hits = await searchChunks(qVector, TOP_K);
+
+  // ④ 阈值拒答（距离越小越相似，注意方向！）
+  const relevant = hits.filter((h) =&gt; h.distance &lt;= DISTANCE_THRESHOLD);
+  const citations = relevant.map((h, i) =&gt; ({
+    ref: i + 1,
+    chunkId: h.id,
+    heading: h.heading,
+    snippet: h.content.slice(0, 80),
+  }));
+  yield { event: &quot;citations&quot;, data: citations };
+
+  // ⑤ 组装 Prompt（拒答路径：空资料 + 指令兜底）
+  const messages = relevant.length &gt; 0
+    ? buildMessages(relevant, history, question)
+    : buildMessages([{ content: &quot;（资料库中没有检索到相关内容）&quot; }], history, question);
+
+  // ⑥ 流式生成
+  const stream = await llm.chat.completions.create({
+    model: config.llm.model,
+    messages,
+    stream: true,
+  });
+
+  let answer = &quot;&quot;;
+  try {
+    for await (const part of stream) {
+      const text = part.choices[0]?.delta?.content ?? &quot;&quot;;
+      if (text) {
+        answer += text;
+        yield { event: &quot;token&quot;, data: { text } };
+      }
+    }
+  } catch (err) {
+    yield { event: &quot;error&quot;, data: { message: err instanceof Error ? err.message : &quot;生成中断&quot; } };
+  }
+
+  // ⑦ 落库（含引用 chunk id 列表）
+  await addMessage({
+    conversationId: conv.id,
+    role: &quot;assistant&quot;,
+    content: answer,
+    citations: citations.map((c) =&gt; c.chunkId),
+  });
+  yield { event: &quot;done&quot;, data: { finishReason: &quot;stop&quot; } };
+}</code></pre>
+<p>事件顺序是设计过的：<code>meta</code> 先给会话 id（前端新建会话时等着它）；<code>citations</code> 在 token 之前到（前端可以先渲染引用区，答案逐字长出来时引用已经就位）；<code>token</code> 流是主体；<code>done</code> 收尾；任何阶段炸了发 <code>error</code>，客户端收到后能把已收到的内容保留下来、提示重试，而不是整个答案消失。完整协议一览（前后端的契约，第 15 章对着它写解析）：</p>
+<table><thead><tr><th>event</th><th>data 内容</th><th>时机</th><th>前端用途</th></tr></thead><tbody><tr><td>meta</td><td><code>{&quot;conversationId&quot;: 1}</code></td><td>链路开始</td><td>新会话拿到 id，更新路由</td></tr><tr><td>citations</td><td><code>[{&quot;ref&quot;:1,&quot;chunkId&quot;:4,&quot;heading&quot;:&quot;...&quot;,&quot;snippet&quot;:&quot;...&quot;}]</code></td><td>检索完成后</td><td>渲染引用区；空数组 = 拒答路径</td></tr><tr><td>token</td><td><code>{&quot;text&quot;:&quot;根据&quot;}</code></td><td>生成中，多次</td><td>打字机追加</td></tr><tr><td>done</td><td><code>{&quot;finishReason&quot;:&quot;stop&quot;}</code></td><td>正常结束</td><td>关闭流式态，允许下一次提问</td></tr><tr><td>error</td><td><code>{&quot;message&quot;:&quot;...&quot;}</code></td><td>任一阶段失败</td><td>保留已收内容，提示重试</td></tr></tbody></table>
+<p>会话路由的其余部分（<code>src/routes/chat.ts</code> 内）都是常规 CRUD：</p>
+<pre class="code"><code class="lang-ts">chatRouter.post(&quot;/conversations&quot;, async (_req, res) =&gt; {
+  res.status(201).json(await createConversation());
+});
+
+chatRouter.get(&quot;/conversations&quot;, async (_req, res) =&gt; {
+  res.json(await listConversations());
+});
+
+chatRouter.delete(&quot;/conversations/:id&quot;, async (req, res) =&gt; {
+  await deleteConversation(Number(req.params.id));
+  res.json({ ok: true });
+});
+
+chatRouter.get(&quot;/conversations/:id/messages&quot;, async (req, res) =&gt; {
+  res.json(await listMessages(Number(req.params.id)));
+});
+
+// 引用溯源：chunk 原文 + 出处
+chatRouter.get(&quot;/chunks/:id&quot;, async (req, res) =&gt; {
+  const chunk = await getChunk(Number(req.params.id));
+  if (!chunk) return res.status(404).json({ error: &quot;chunk 不存在&quot; });
+  res.json(chunk);
+});</code></pre>
+<p><code>src/index.ts</code> 挂上 <code>chatRouter</code>，问答 API 就完整了。</p>
+<h2 id="h-9">里程碑 2 验收：curl 实测全链路</h2>
+<p><code>curl -N</code>（N 表示不缓冲，实时显示流式内容）打问答接口：</p>
+<pre class="code"><code class="lang-bash">curl -N -X POST http://localhost:8000/api/chat \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;question&quot;:&quot;pgvector 的 HNSW 索引怎么建？&quot;}'</code></pre>
+<p>真实输出（事件逐个到达，终端里能看到 token 一块块蹦出来）：</p>
+<pre class="code"><code class="lang-text">event: meta
+data: {&quot;conversationId&quot;:1}
+
+event: citations
+data: [{&quot;ref&quot;:1,&quot;chunkId&quot;:4,&quot;heading&quot;:&quot;索引类型&quot;,&quot;snippet&quot;:&quot;HNSW 是多层图索引，查询快、召回高……&quot;}]
+
+event: token
+data: {&quot;text&quot;:&quot;根据你的&quot;}
+
+event: token
+data: {&quot;text&quot;:&quot;笔记，建&quot;}
+
+event: token
+data: {&quot;text&quot;:&quot; HNSW 索引&quot;}
+
+……（token 流持续）……
+
+event: done
+data: {&quot;finishReason&quot;:&quot;stop&quot;}</code></pre>
+<p>四项验收逐个过。多轮指代：拿返回的 conversationId 追问「那它的参数怎么调？」，检索改写后的「它」能正确指向 HNSW（后端日志里能看到改写结果）。历史持久化：<code>curl http://localhost:8000/api/conversations/1/messages</code>，用户和助手的消息都在，助手消息带着 citations。会话列表：<code>curl http://localhost:8000/api/conversations</code>，按最近活跃排序，标题是首轮问题截断。引用溯源：<code>curl http://localhost:8000/api/chunks/4</code>，拿到原文和 <code>doc_name</code>。</p>
+<p>再验拒答：问一个笔记里压根没有的问题（「量子计算机的工作原理」），citations 应该是空数组，答案应该明说「根据现有资料无法回答」而不是开编。如果你的阈值设置下它照样答了——恭喜找到第一个调参点，这就是第 16 章评估要系统干的事。</p>
+<p>最后看一眼会话标题的现行实现：首轮问题截断 20 字。能用，但「pgvector 的 HNSW 索引怎么」这种标题读到一半很别扭。优化方案也简单：首轮问答完成后，让 LLM 用一句十个字以内的话总结会话主题，更新 <code>conversations.title</code>——一次轻量调用，成本可忽略。这是留给你独立完成的第一道工序，做完它，你就改出了这个项目的第一个个人分支。</p>
+<h2 id="h-10">常见坑位清单</h2>
+<ul><li><strong>SSE 事件缓冲</strong>：本地直连没问题，但经过某些代理（nginx 默认缓冲、公司网关）时 token 会攒一大批才到。解法：代理层关掉缓冲（nginx 加 <code>proxy_buffering off;</code>），第 16 章部署配置里会给。</li><li><strong>答案里出现资料外的编号</strong>：历史角标没洗。检查 <code>cleanHistory</code> 那行正则。</li><li><strong>追问全都指代错误</strong>：改写器没生效。先打印 <code>rewritten</code> 看改写结果，再查历史是不是真的传进去了（空历史会跳过改写，这是特性不是 bug）。</li><li><strong>阈值方向写反</strong>：症状是「答案质量整体很迷」——相关块全被滤掉，模型拿到的都是噪声或空资料。回到本文「阈值拒答」一节对方向。</li><li><strong>连接断开后答案没了</strong>：网络中断时 for await 抛异常，error 事件已发出，已生成的部分在 answer 变量里——可以选择落库残句，本章从简（done 前中断则不入库）。</li></ul>
+<h2 id="h-11">小结与预告</h2>
+<p>本章把查询期工业化到底：async generator 让业务产出纯事件流、协议留在路由层；改写、检索、阈值、组装、流式、落库七个环节各就各位；SSE 的协议细节（响应头三件套、event/data 行对、EventSource 只支持 GET 的限制）全部落地。</p>
+<p>后端四大能力齐了：文档导入（13）、文档管理（13）、语义问答（14）、对话历史（14）。下一章换到浏览器那一侧：Vue 3 实现文档库页和对话页，fetch 流式读取 SSE、打字机渲染、可点击的引用角标——用户体验的最后一公里。</p>
+</article>
+<nav class="chapter-nav">
+    <span><a href="13-document-ingestion.html">← 第 13 章</a></span>
+    <span><a href="15-frontend-implementation.html">第 15 章 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

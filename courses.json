@@ -8,5 +8,15 @@
     "lessonCount": 15,
     "path": "courses/langchain-langgraph/index.html",
     "status": "manual-review"
+  },
+  {
+    "slug": "rag",
+    "title": "RAG 检索增强生成 从入门到实战进阶",
+    "subtitle": "从诞生背景到核心组件、检索策略与评估优化，再到个人笔记助手全栈实战",
+    "description": "面向 0 基础或有一定编程经验的 AI 应用开发学习者，讲清 RAG 的原理、核心组件与系统优化方法，并基于 PostgreSQL + pgvector 从零交付一个完整的个人笔记助手 RAG 应用。",
+    "moduleCount": 3,
+    "lessonCount": 16,
+    "path": "courses/rag/index.html",
+    "status": "manual-review"
   }
 ]

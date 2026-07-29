@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG 术语表 · RAG 检索增强生成 从入门到实战进阶</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">RAG 检索增强生成 从入门到实战进阶</a></header>
+<main class="chapter">
+<nav class="toc" aria-label="本章目录"><h2>本章目录</h2><ol><li><a href="#h-2">基础概念</a></li><li><a href="#h-3">索引期</a></li><li><a href="#h-4">向量与检索</a></li><li><a href="#h-5">查询期优化</a></li><li><a href="#h-6">生成与评估</a></li><li><a href="#h-7">前沿形态</a></li></ol></nav>
+<article>
+<h1 id="h-1">RAG 术语表</h1>
+<blockquote><p>全课核心术语速查。按主题分组，每条给出一句人话解释和首次出场的章节。</p></blockquote>
+<h2 id="h-2">基础概念</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>RAG（检索增强生成）</td><td>先检索相关资料，再让模型基于资料生成答案的技术范式</td><td>1</td></tr><tr><td>LLM（大语言模型）</td><td>通过预测下一个词来工作的超大参数量语言模型</td><td>1</td></tr><tr><td>Token</td><td>模型处理文字的最小单位，中文约 1 汉字 1–2 个</td><td>1</td></tr><tr><td>上下文窗口</td><td>模型一次能看到的 token 总量上限</td><td>1</td></tr><tr><td>幻觉（Hallucination）</td><td>模型生成看似合理实则错误内容的现象，机制的副产品</td><td>1</td></tr><tr><td>知识截止</td><td>训练数据的时间边界，之后的信息模型一概不知</td><td>1</td></tr><tr><td>参数化记忆</td><td>压缩在模型参数里的知识，训练结束即冻结</td><td>1</td></tr><tr><td>非参数化记忆</td><td>存放在外部（数据库/文档库）、用的时候现查的知识</td><td>1</td></tr><tr><td>Prompt Engineering</td><td>通过设计输入引导模型输出的做法，知识放提示词里</td><td>1</td></tr><tr><td>Fine-tuning（微调）</td><td>用自有数据继续训练模型参数，擅长教行为不擅长灌知识</td><td>1</td></tr></tbody></table>
+<h2 id="h-3">索引期</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>索引期</td><td>文档进来时跑的预处理流水线（加载→分块→向量化→入库）</td><td>2</td></tr><tr><td>查询期</td><td>用户提问时跑的问答流水线（检索→组装→生成）</td><td>2</td></tr><tr><td>Chunking（分块）</td><td>把长文档切成语义聚焦的小块</td><td>4</td></tr><tr><td>Chunk Size / Overlap</td><td>块的目标长度 / 相邻块之间重复保留的内容</td><td>4</td></tr><tr><td>递归切分</td><td>按「段落→句子→字符」优先级逐级降级的切分策略，工业默认</td><td>4</td></tr><tr><td>语义稀释</td><td>块内主题过多导致向量「四不像」，检索匹配度下降</td><td>3</td></tr><tr><td>元数据（Metadata）</td><td>挂在块上的出身信息（文档、位置、标题），过滤与溯源的基础</td><td>4</td></tr></tbody></table>
+<h2 id="h-4">向量与检索</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>Embedding（嵌入）</td><td>把文字映射成向量（一串数字）的技术</td><td>3</td></tr><tr><td>稠密向量</td><td>各维度几乎全非零、语义弥散分布的向量，Embedding 的产物</td><td>3</td></tr><tr><td>稀疏向量</td><td>维度巨大但绝大多数为零、维度对应具体词的向量</td><td>3</td></tr><tr><td>语义检索</td><td>按向量距离找「意思相近」的内容，而非字面匹配</td><td>3</td></tr><tr><td>余弦相似度</td><td>比较两向量方向夹角的相似度度量，-1 到 1</td><td>3</td></tr><tr><td>ANN（近似最近邻）</td><td>用一点精度换数量级速度的检索方式</td><td>3</td></tr><tr><td>HNSW</td><td>多层图结构的 ANN 索引，pgvector 首选</td><td>3、5</td></tr><tr><td>pgvector</td><td>把 PostgreSQL 变成向量数据库的扩展</td><td>5</td></tr><tr><td><code>&lt;=&gt;</code> <code>&lt;-&gt;</code> <code>&lt;#&gt;</code></td><td>pgvector 的余弦距离、L2 距离、负内积操作符</td><td>5</td></tr></tbody></table>
+<h2 id="h-5">查询期优化</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>查询改写</td><td>借对话历史把指代问题补全成自包含检索句</td><td>6</td></tr><tr><td>查询扩展 / 多路召回</td><td>一个问题生成多个问法分别检索，合并结果</td><td>6</td></tr><tr><td>HyDE</td><td>先让模型编个假答案，用假答案的向量去检索</td><td>6</td></tr><tr><td>子查询分解</td><td>把复合问题拆成可独立检索的子问题</td><td>6</td></tr><tr><td>BM25</td><td>关键词检索的经典打分函数（IDF 稀罕度 + TF 饱和 + 长度归一）</td><td>7</td></tr><tr><td>混合检索（Hybrid Search）</td><td>向量路 + 关键词路两路召回，各取所长</td><td>7</td></tr><tr><td>RRF（倒数排名融合）</td><td>不看分数只看名次的融合算法，1/(k+rank)</td><td>7</td></tr><tr><td>Re-ranking（重排序）</td><td>粗排召回后用精准模型对候选重新打分排序</td><td>8</td></tr><tr><td>Cross-Encoder</td><td>把查询和文档拼在一起输入模型、直接判相关度的结构</td><td>8</td></tr><tr><td>双塔结构</td><td>查询和文档各自独立编码的 Embedding 结构，快但丢交互信息</td><td>8</td></tr></tbody></table>
+<h2 id="h-6">生成与评估</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>Lost in the Middle</td><td>模型对 Prompt 中间部分内容利用最差的现象</td><td>9</td></tr><tr><td>引用溯源</td><td>答案标注出自哪块资料，可回看原文</td><td>9</td></tr><tr><td>拒答</td><td>检索不到相关内容时明说不知道，不硬答</td><td>9</td></tr><tr><td>SSE</td><td>基于 HTTP 的单向流式推送协议，问答产品标配</td><td>9、14</td></tr><tr><td>Recall@K</td><td>相关块里有多少进了前 K 名，管「漏不漏」</td><td>10</td></tr><tr><td>MRR</td><td>第一个相关块排名的倒数均值，管「前不前」</td><td>10</td></tr><tr><td>NDCG</td><td>带相关性分级和位置折扣的排序质量指标</td><td>10</td></tr><tr><td>Faithfulness（忠实度）</td><td>答案论断能否被资料支撑，RAG 头号生成指标</td><td>10</td></tr><tr><td>RAGAS</td><td>Python 生态的 RAG 评估框架</td><td>10</td></tr><tr><td>badcase 归因</td><td>把失败案例按「检索漏/检索错/生成错」分责的迭代法</td><td>10</td></tr></tbody></table>
+<h2 id="h-7">前沿形态</h2>
+<table><thead><tr><th>术语</th><th>一句话解释</th><th>章节</th></tr></thead><tbody><tr><td>GraphRAG</td><td>抽取实体关系建知识图谱，补全局性与关系性问题</td><td>11</td></tr><tr><td>Agentic RAG</td><td>LLM 在决策回路里决定检索动作，补多步推理</td><td>11</td></tr><tr><td>Self-RAG</td><td>生成过程中自我评估「要不要检索、答案忠不忠」</td><td>11</td></tr><tr><td>CRAG</td><td>检索质量不达标时主动纠正（重查/补查）的变体</td><td>11</td></tr></tbody></table>
+</article>
+<nav class="chapter-nav">
+    <span><a href="../index.html">← 返回课程首页</a></span>
+    <span><a href="../index.html">返回课程首页 →</a></span>
+  </nav>
+</main>
+<script src="../assets/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: "dark" });</script>
+<script src="../assets/course.js" defer></script>
+</body>
+</html>

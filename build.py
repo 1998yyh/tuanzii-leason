@@ -111,7 +111,7 @@ def copy_portal(dist: Path) -> None:
 
 
 def copy_course_body(slug: str, src_dir: Path, dest_dir: Path) -> None:
-    """只拷课程本体：index.html、course.json、lessons/*.html、assets/"""
+    """只拷课程本体：index.html、course.json、lessons/*.html、reference/*.html、assets/"""
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     for name in ("index.html", "course.json"):
@@ -129,6 +129,14 @@ def copy_course_body(slug: str, src_dir: Path, dest_dir: Path) -> None:
         lessons_dest.mkdir(parents=True, exist_ok=True)
         for html in lessons_src.glob("*.html"):
             shutil.copy2(html, lessons_dest / html.name)
+
+    # 学生可见的参考资料（术语表等），与 lessons 同规则：只拷 HTML 成品
+    reference_src = src_dir / "reference"
+    reference_dest = dest_dir / "reference"
+    if reference_src.is_dir():
+        reference_dest.mkdir(parents=True, exist_ok=True)
+        for html in reference_src.glob("*.html"):
+            shutil.copy2(html, reference_dest / html.name)
 
 
 def build_dist(courses: list[dict]) -> None:
