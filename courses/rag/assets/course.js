@@ -1,7 +1,8 @@
 /**
  * 团子课堂 · 课时页增强
- * 把 pre.code 包成带工具栏的代码卡片（语言标签 + 一键复制）
- * 无 JS 时 pre.code 自带卡片样式兜底，不碍事
+ * 1. 把 pre.code 包成带工具栏的代码卡片（语言标签 + 一键复制）
+ * 2. 把正文表格包一层 .table-scroll 滚动容器（小屏横滚不破版）
+ * 无 JS 时 pre.code 自带卡片样式、表格小屏压列兜底，不碍事
  */
 (function () {
   "use strict";
@@ -60,4 +61,15 @@
   }
 
   document.querySelectorAll("pre.code").forEach(enhance);
+
+  // 这个SB函数把裸 table 包成可横滚的容器，小屏不再把页面顶穿，别tm重复包
+  function wrapTable(table) {
+    if (table.parentNode.classList && table.parentNode.classList.contains("table-scroll")) return;
+    var wrap = document.createElement("div");
+    wrap.className = "table-scroll";
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
+  }
+
+  document.querySelectorAll("main.chapter table").forEach(wrapTable);
 })();

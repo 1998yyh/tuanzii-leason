@@ -67,3 +67,12 @@ tuanzii-leason/
 ## 视觉
 
 Guardnet 暗黑风（参考 teach-yourself-skill/examples）：纯黑底 `#000` + 冰蓝 accent `#8fb1ff`，hero 区大字标题 + 巨型水印 + 辉光光斑，章节卡片为 3 列辉光网格；课时页为「正文卡片 + 粘性目录侧栏」双栏布局，代码块自动包成带语言标签和一键复制的卡片，mermaid 用 dark 主题渲染。门户 portal.css 与课程页 course.css 共用同一套设计 token。
+
+## 移动端适配
+
+全站响应式（断点 1080 / 900 / 680px）：卡片网格 3→2→1 列降级，课时页侧栏目录在小屏收到正文上方。移动端细节：
+
+- `text-size-adjust: 100%` 防 iOS 横屏擅自放大字号，`-webkit-tap-highlight-color` 统一点击高亮
+- 正文 `overflow-wrap: break-word`，长 URL/长英文不撑破版面；`img/video` 限宽兜底
+- 表格由 course.js 包一层 `.table-scroll` 横滚容器（无 JS 时小屏压列兜底），mermaid 图小屏保持原始尺寸横滚
+- 目录链接、复制按钮等触摸目标在小屏加大，卡片带 `:active` 按下反馈（触屏无 hover）

@@ -50,7 +50,16 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  /* 防 iOS 横屏擅自放大字号；点击高亮换成淡 accent 色 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: rgba(143, 177, 255, .16);
+}
+
+/* 移动端兜底：任何图片/视频都不许撑破容器 */
+img, video { max-width: 100%; height: auto; }
 
 body {
   margin: 0;
@@ -166,6 +175,7 @@ a:focus-visible, button:focus-visible {
   color: var(--muted);
   font-size: 12px;
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .section-heading {
@@ -238,6 +248,9 @@ a:focus-visible, button:focus-visible {
 .chapter-card:nth-child(3n)::before { right: -160px; bottom: -130px; }
 .chapter-card:hover { border-color: var(--line-strong); }
 .chapter-card:hover::before { opacity: .38; }
+/* 触屏没有 hover，按下时给同样的反馈 */
+.chapter-card:active { border-color: var(--line-strong); }
+.chapter-card:active::before { opacity: .38; }
 .chapter-card small { color: var(--muted); font-size: 12px; letter-spacing: .03em; }
 .chapter-card h3 {
   max-width: 340px;
@@ -305,6 +318,8 @@ main.chapter > article {
   background: var(--surface);
   color: var(--content-text);
   font-size: 17px;
+  /* 长 URL/长英文单词允许断行，别把正文栏撑破 */
+  overflow-wrap: break-word;
 }
 
 /* 粘性目录侧栏（DOM 里 toc 在 article 前，用显式 grid 放置到右列） */
@@ -322,6 +337,7 @@ main.chapter > .toc {
   border-radius: var(--radius-lg);
   background: var(--surface-glass);
   backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 .toc h2 {
   margin: 0 0 12px;
@@ -425,6 +441,9 @@ blockquote p { margin: 0; }
 
 /* 表格 */
 article > table { display: block; overflow-x: auto; }
+/* course.js 包装的横滚容器：margin 从 table 挪到容器上，table 保持固有宽度横滚 */
+.table-scroll { margin: 24px 0 30px; overflow-x: auto; }
+.table-scroll > table { margin: 0; }
 table {
   width: 100%;
   min-width: 660px;
@@ -517,13 +536,18 @@ p code, li code, td code, blockquote code {
   main.chapter > article { grid-row: 2; padding-inline: 32px; }
   main.chapter > .toc { grid-column: 1; grid-row: 1; position: static; max-height: none; }
   main.chapter > .chapter-nav { grid-row: 3; }
+  /* 无 JS 兜底：表格压列换行也绝不把页面顶穿（有 JS 时由 .table-scroll 横滚） */
+  article > table { min-width: 0; }
 }
 @media (max-width: 680px) {
   .site-shell { padding: 14px 16px 56px; }
   .topbar { align-items: flex-start; flex-direction: column; gap: 12px; }
   .topbar nav { gap: 16px; }
+  .topbar nav a { padding: 8px 0; font-size: 14px; } /* 加大触摸目标 */
   .course-hero { min-height: 0; padding: 68px 0 48px; }
   .course-hero::before { right: -260px; width: 420px; height: 420px; }
+  .course-hero h1 { font-size: clamp(30px, 9.5vw, 42px); } /* 小屏别让大标题撑死人 */
+  .course-hero .lead { font-size: 16px; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .chapter-grid { grid-template-columns: 1fr; }
   .chapter-card { min-height: 300px; padding: 24px; }
@@ -532,8 +556,17 @@ p code, li code, td code, blockquote code {
   main.chapter > article { padding: 16px 20px 36px; font-size: 16px; }
   article h1 { font-size: 28px; }
   article h2 { font-size: 26px; }
+  /* 目录链接/复制按钮加大触摸目标，胖手指也点得中 */
+  .toc a { padding: 10px 0; font-size: 14px; }
+  .toc a::before { line-height: 2.2; }
+  .copy-code { padding: 8px 14px; }
+  th, td { padding: 10px 12px; }
+  /* mermaid 保持原始尺寸横滚，比缩成蚂蚁字强 */
+  .mermaid { padding: 10px; }
+  .mermaid svg { max-width: none; }
   .chapter-nav { flex-direction: column; }
   .chapter-nav span { max-width: none; }
+  .chapter-nav a { padding: 14px 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
